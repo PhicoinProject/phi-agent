@@ -1,0 +1,1611 @@
+/*
+ * Phi Kanban — dashboard plugin styles.
+ *
+ * All colors reference theme CSS vars so the board reskins with the
+ * active dashboard theme. No hardcoded palette.
+ */
+
+.phi-kanban {
+  width: 100%;
+}
+
+/* ---- Code/pre reset (theme-immune default) --------------------------- *
+ *
+ * Themes (shipped AND user-installable) routinely paint every <code> and
+ * <pre> on the page with an opaque accent-color fill. That's fine for a
+ * Markdown doc page; it's wrong for the kanban plugin, which uses <code>
+ * for event payloads, run metadata, log panes, and similar raw-data
+ * surfaces that must read as plain text on the board's own background.
+ *
+ * Rather than play whack-a-mole with theme rules (the pre-#21086 approach
+ * was a single ``.phi-kanban code { background: transparent }`` rule
+ * that lost specificity fights in the drawer context), reset EVERY
+ * <code>/<pre> inside the kanban plugin container to transparent with
+ * ``!important``, then opt back in ONLY on the class that carries
+ * intentional styling (``.phi-kanban-md code``, the inline code pill
+ * inside rendered task-body Markdown).
+ *
+ * Net effect: any new theme, shipped or third-party, can introduce
+ * whatever global code-fill rule it wants — kanban surfaces stay clean
+ * unless the theme deliberately targets our internal class names.
+ * Regression coverage: #21086 (task-drawer event payloads unreadable
+ * across every shipped theme).
+ */
+.phi-kanban code,
+.phi-kanban pre,
+.phi-kanban-drawer code,
+.phi-kanban-drawer pre {
+  background: transparent !important;
+  color: inherit;
+}
+/* The Markdown renderer intentionally paints a subtle code pill behind
+ * inline ``<code>`` inside task-body prose — but NOT inside a fenced
+ * block (those are a ``<pre class="phi-kanban-md-code">`` with a
+ * bare ``<code>`` inside, and the pill would double up with the pre
+ * background). ``:not()`` scopes this opt-back-in to inline code only.
+ *
+ * Uses ``color-mix(currentColor ...)`` rather than ``--color-foreground``
+ * so the pill renders consistently even when a theme forgets to set
+ * ``--color-foreground`` (pre-existing safeguard from #18576).
+ */
+.phi-kanban .phi-kanban-md code:not(.phi-kanban-md-code *) {
+  background: color-mix(in srgb, currentColor 8%, transparent) !important;
+}
+/* Tighten contrast on the drawer-specific payload class — it lives on
+ * its own line in the events list, so matching the muted-foreground
+ * color keeps it visually distinct from the event title without
+ * screaming for attention. */
+.phi-kanban-event-payload,
+.phi-kanban-drawer .phi-kanban-event-payload {
+  color: var(--color-muted-foreground) !important;
+}
+
+/* ---- Columns layout -------------------------------------------------- */
+
+.phi-kanban-columns {
+  display: flex;
+  gap: 0.75rem;
+  align-items: start;
+  overflow-x: auto;
+}
+
+.phi-kanban-columns--scrollable {
+  cursor: grab;
+}
+
+.phi-kanban-columns--panning,
+.phi-kanban-columns--panning * {
+  cursor: grabbing !important;
+}
+
+.phi-kanban-column {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+  min-height: 200px;
+  max-height: calc(100vh - 220px);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.phi-kanban-column--drop {
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 8%, var(--color-card));
+}
+
+.phi-kanban-column-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.25rem 0.35rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--color-foreground);
+}
+
+.phi-kanban-column-label {
+  flex: 1;
+  letter-spacing: 0.01em;
+}
+
+.phi-kanban-column-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.phi-kanban-column-add {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+  border-radius: var(--radius-sm, 0.25rem);
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.phi-kanban-column-add:hover {
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+}
+
+.phi-kanban-column-sub {
+  padding: 0 0.25rem 0.5rem;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  margin-bottom: 0.5rem;
+}
+
+.phi-kanban-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  overflow-y: auto;
+  padding-right: 0.1rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.phi-kanban-empty {
+  padding: 1.5rem 0.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  border: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+/* ---- Status dots ----------------------------------------------------- */
+
+.phi-kanban-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--color-muted-foreground);
+}
+.phi-kanban-dot-triage   { background: #b47dd6; }  /* lilac — fresh/unspecified */
+.phi-kanban-dot-todo     { background: var(--color-muted-foreground); }
+.phi-kanban-dot-ready    { background: #d4b348; }  /* amber */
+.phi-kanban-dot-running  { background: #3fb97d; }  /* green */
+.phi-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
+.phi-kanban-dot-review   { background: #48b0c4; }  /* cyan — awaiting review */
+.phi-kanban-dot-done     { background: #4a8cd1; }  /* blue */
+.phi-kanban-dot-archived { background: var(--color-border); }
+
+/* ---- Progress pill (N/M child tasks done) --------------------------- */
+
+.phi-kanban-progress {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.62rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.02em;
+}
+.phi-kanban-progress--full {
+  background: color-mix(in srgb, #3fb97d 22%, transparent);
+  border-color: color-mix(in srgb, #3fb97d 45%, transparent);
+  color: var(--color-foreground);
+}
+
+/* ---- Lanes (per-profile sub-grouping inside Running) ---------------- */
+
+.phi-kanban-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.25rem 0 0.35rem;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.phi-kanban-lane:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.phi-kanban-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.65rem;
+  /* Assignee/profile names are case-sensitive. Do not visually uppercase
+   * lane headers, otherwise a valid `analyst` profile appears as `ANALYST`
+   * in the WebUI and users may copy the wrong casing back into edits. */
+  letter-spacing: 0.02em;
+  color: var(--color-muted-foreground);
+  padding: 0 0.1rem;
+}
+.phi-kanban-lane-name {
+  font-weight: 600;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.phi-kanban-lane-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Card ------------------------------------------------------------ */
+
+.phi-kanban-card {
+  cursor: grab;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.phi-kanban-card:hover {
+  box-shadow: 0 1px 0 0 var(--color-ring) inset, 0 0 0 1px var(--color-ring) inset;
+}
+.phi-kanban-card:active {
+  cursor: grabbing;
+  transform: scale(0.995);
+}
+
+.phi-kanban-card-content {
+  padding: 0.5rem 0.6rem !important;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.phi-kanban-card-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.phi-kanban-card-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.03em;
+}
+
+.phi-kanban-card-title {
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--color-foreground);
+  word-break: break-word;
+}
+
+.phi-kanban-card-meta {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  gap: 0.55rem;
+}
+
+.phi-kanban-priority {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  background: color-mix(in srgb, var(--color-ring) 18%, transparent);
+  color: var(--color-foreground);
+  border: 1px solid color-mix(in srgb, var(--color-ring) 40%, transparent);
+}
+
+.phi-kanban-tag {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+}
+
+/* Board-level project binding readout in the board switcher; the × unbinds. */
+.phi-kanban-board-project-unbind {
+  margin-left: 0.25rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  border-radius: 0.2rem;
+  color: var(--color-muted-foreground, #888);
+  cursor: pointer;
+}
+.phi-kanban-board-project-unbind:hover {
+  color: var(--color-destructive, #d44);
+  background: color-mix(in srgb, var(--color-destructive, #d44) 15%, transparent);
+}
+
+.phi-kanban-needs-assignee {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 45%, var(--color-border));
+  color: var(--color-foreground);
+}
+
+.phi-kanban-assignee {
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-foreground) 80%, var(--color-muted-foreground));
+}
+.phi-kanban-unassigned {
+  font-style: italic;
+}
+.phi-kanban-ago {
+  margin-left: auto;
+}
+
+/* ---- Create-task dialog ----------------------------------------------- */
+
+/* Wider than the base dialog so the workspace/parent selectors and the
+   labeled two-column rows breathe; still clamped to the viewport. */
+.phi-kanban-create-dialog {
+  width: 36rem;
+}
+
+/* ---- Drawer (task detail side panel) --------------------------------- */
+
+.phi-kanban-drawer-shade {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.phi-kanban-drawer {
+  width: min(var(--phi-kanban-drawer-width, 640px), 92vw);
+  height: 100vh;
+  /* Dynamic viewport unit excludes the mobile browser's collapsing chrome
+     (URL/nav bars) so the drawer's bottom row stays reachable. Falls back to
+     100vh on browsers without dvh support. */
+  height: 100dvh;
+  max-height: 100dvh;
+  background: var(--color-card);
+  border-left: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.35);
+  animation: phi-kanban-drawer-in 180ms ease-out;
+}
+
+@keyframes phi-kanban-drawer-in {
+  from { transform: translateX(100%); opacity: 0.3; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.phi-kanban-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.8rem;
+  /* Honor the top safe-area inset (notch) so the task id / close button are
+     not clipped on mobile. */
+  padding-top: max(0.6rem, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* On mobile the dashboard shell renders a fixed top bar (min-h-14, hidden at
+   the lg breakpoint). The drawer is a body-level z-60 overlay starting at the
+   viewport top, so its header would sit behind that bar. Push the header down
+   by the bar height (3.5rem) plus the top safe-area inset. */
+@media (max-width: 1023px) {
+  .phi-kanban-drawer-head {
+    padding-top: calc(3.5rem + env(safe-area-inset-top));
+  }
+}
+
+.phi-kanban-drawer-close {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+.phi-kanban-drawer-close:hover { color: var(--color-foreground); }
+
+/* Attachment download trigger — styled as a link, rendered as a <button>
+   so the click handler can fetch with the session token (#35338). */
+.phi-kanban-attachment-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  color: var(--color-primary, #6ea8fe);
+  cursor: pointer;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.phi-kanban-attachment-link:hover { text-decoration: underline; }
+
+.phi-kanban-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.9rem;
+  /* When no comment row is rendered (loading / error states), the scrolling
+     body is the bottom-most element — extend its bottom padding past the
+     mobile browser chrome so the last content stays readable. */
+  padding-bottom: max(0.9rem, calc(0.9rem + env(safe-area-inset-bottom)));
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.phi-kanban-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.phi-kanban-drawer-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.6rem;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.phi-kanban-meta-row {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.phi-kanban-meta-label {
+  width: 92px;
+  color: var(--color-muted-foreground);
+}
+.phi-kanban-meta-value {
+  color: var(--color-foreground);
+  word-break: break-word;
+}
+
+.phi-kanban-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* Specifier result banner — sits directly under the status action row. */
+.phi-kanban-msg-ok,
+.phi-kanban-msg-err {
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
+  line-height: 1.3;
+}
+.phi-kanban-msg-ok {
+  background: rgba(46, 160, 67, 0.12);
+  color: #2ea043;
+  border: 1px solid rgba(46, 160, 67, 0.35);
+}
+.phi-kanban-msg-err {
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+}
+
+/* ---- Home channel subscription toggles (per-platform, per-task) ----- */
+
+.phi-kanban-home-subs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.phi-kanban-home-sub {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.phi-kanban-home-sub--on {
+  /* Subscribed toggle — use a strong ring-colored accent so the on/off
+   * distinction reads at a glance, not just from the ✓ prefix. Border +
+   * filled background + bolder weight keep the state obvious across
+   * themes (tested on default teal and NERV orange). */
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 32%, transparent);
+  color: var(--color-foreground);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ring) 40%, transparent);
+}
+
+.phi-kanban-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.phi-kanban-section-head {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  color: var(--color-muted-foreground);
+}
+
+.phi-kanban-pre {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--color-foreground);
+}
+
+.phi-kanban-comment {
+  border-left: 2px solid color-mix(in srgb, var(--color-ring) 35%, transparent);
+  padding-left: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.phi-kanban-comment-head {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+}
+.phi-kanban-comment-author {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+.phi-kanban-comment-ago {
+  color: var(--color-muted-foreground);
+}
+
+.phi-kanban-event {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.phi-kanban-event-kind {
+  color: var(--color-foreground);
+  min-width: 6rem;
+}
+.phi-kanban-event-payload {
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+/* Comment footer = workflow hint + input row. The border-top lives on the
+   wrapper so the hint sits inside the same visual block as the input. */
+.phi-kanban-drawer-comment-foot {
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+}
+
+.phi-kanban-comment-hint {
+  padding: 0.45rem 0.75rem 0;
+  cursor: help;
+}
+
+.phi-kanban-drawer-comment-row {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.55rem 0.75rem;
+  /* Keep the comment input clear of the mobile browser nav bar / home
+     indicator by extending the bottom padding with the safe-area inset. */
+  padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
+}
+
+.phi-kanban-count {
+  display: inline-flex;
+  gap: 0.2rem;
+  align-items: center;
+}
+
+/* ---- Selection chrome ----------------------------------------------- */
+
+.phi-kanban-card--selected :where(.phi-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-ring) inset,
+              0 0 0 1px var(--color-ring) inset;
+  background: color-mix(in srgb, var(--color-ring) 6%, var(--color-card));
+}
+
+/* Batch drag source styling — cards that are part of the current multi-drag.
+   The browser ghost image floats; we dim the original DOM nodes so the user
+   sees the whole set is in-flight. */
+.phi-kanban-card--dragging-source :where(.phi-kanban-card-content) {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+
+.phi-kanban-card-check {
+  width: 0.85rem;
+  height: 0.85rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Bulk action bar ------------------------------------------------ */
+
+.phi-kanban-bulk {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: color-mix(in srgb, var(--color-ring) 10%, var(--color-card));
+  border: 1px solid color-mix(in srgb, var(--color-ring) 40%, var(--color-border));
+  border-radius: var(--radius-sm, 0.25rem);
+  flex-wrap: wrap;
+}
+.phi-kanban-bulk-count {
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding-right: 0.25rem;
+}
+
+.phi-kanban-bulk > button,
+.phi-kanban-bulk-reassign > button {
+  height: 1.7rem !important;
+  padding: 0 0.5rem !important;
+  font-size: 0.7rem !important;
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+}
+.phi-kanban-bulk > button:hover:not(:disabled),
+.phi-kanban-bulk-reassign > button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+}
+.phi-kanban-bulk-reassign {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+/* ---- Dependency editor chips --------------------------------------- */
+
+.phi-kanban-deps-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.phi-kanban-deps-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--color-muted-foreground);
+  min-width: 4rem;
+}
+.phi-kanban-deps-chips {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.phi-kanban-deps-empty {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+.phi-kanban-dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.1rem 0.35rem;
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--color-foreground);
+}
+.phi-kanban-dep-chip-x {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+}
+.phi-kanban-dep-chip-x:hover { color: var(--color-destructive, #d14a4a); }
+
+/* ---- Inline edit affordances --------------------------------------- */
+
+.phi-kanban-editable {
+  cursor: pointer;
+  border-bottom: 1px dotted color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+.phi-kanban-editable:hover {
+  color: var(--color-foreground);
+  border-bottom-color: var(--color-ring);
+}
+
+.phi-kanban-drawer-title-text {
+  cursor: pointer;
+}
+.phi-kanban-drawer-title-text:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--color-ring);
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+.phi-kanban-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.phi-kanban-section-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.phi-kanban-edit-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  padding: 0;
+}
+.phi-kanban-edit-link:hover { color: var(--color-ring); }
+
+.phi-kanban-textarea {
+  width: 100%;
+  min-height: 8rem;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.5rem 0.6rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+.phi-kanban-textarea:focus {
+  outline: none;
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ring) 30%, transparent);
+}
+
+/* ---- Markdown rendering -------------------------------------------- */
+
+.phi-kanban-md {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--color-foreground);
+}
+.phi-kanban-md p  { margin: 0.25rem 0; }
+.phi-kanban-md h1,
+.phi-kanban-md h2,
+.phi-kanban-md h3,
+.phi-kanban-md h4 {
+  margin: 0.6rem 0 0.2rem;
+  line-height: 1.25;
+}
+.phi-kanban-md h1 { font-size: 1.05rem; }
+.phi-kanban-md h2 { font-size: 0.95rem; }
+.phi-kanban-md h3 { font-size: 0.88rem; }
+.phi-kanban-md h4 { font-size: 0.82rem; }
+.phi-kanban-md ul {
+  margin: 0.25rem 0 0.25rem 1.1rem;
+  padding: 0;
+}
+.phi-kanban-md li { margin: 0.1rem 0; }
+.phi-kanban-md a {
+  color: var(--color-ring);
+  text-decoration: underline;
+}
+.phi-kanban-md code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  padding: 0.05rem 0.3rem;
+  /* Background is set in the code/pre reset block at the top of this
+   * file with !important, so theme-level global code rules can't knock
+   * out this intentional pill. See #21086. */
+  border-radius: 3px;
+  color: inherit;
+}
+/* Fenced code block. Set a visible background even when --color-foreground
+ * is empty (color-mix falls through to transparent in that case), and force
+ * color: inherit so the text tracks the drawer foreground rather than the
+ * UA default on <code> elements — otherwise themes that don't set
+ * --color-foreground leave code text rendering near-black on dark themes
+ * (see issue #18576). */
+.phi-kanban pre.phi-kanban-md-code {
+  margin: 0.35rem 0;
+  padding: 0.5rem 0.6rem;
+  /* Higher specificity (``.phi-kanban pre.phi-kanban-md-code`` vs
+   * the reset's ``.phi-kanban pre``) so this intentional pill wins
+   * over our own ``<pre>`` reset. ``!important`` also needed so theme
+   * rules that drop their own ``code``/``pre`` fill don't knock it out
+   * either. #21086. */
+  background: color-mix(in srgb, currentColor 6%, transparent) !important;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  overflow-x: auto;
+}
+.phi-kanban-md-code code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.8rem;
+  white-space: pre;
+  color: inherit;
+}
+.phi-kanban-md strong { font-weight: 600; }
+
+/* ---- Touch-drag proxy ---------------------------------------------- */
+
+.phi-kanban-touch-proxy {
+  pointer-events: none;
+  opacity: 0.85;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  transform: scale(1.02);
+  transition: none;
+}
+
+/* ---- Multi-drag ghost ----------------------------------------------- */
+
+.phi-kanban-drag-ghost {
+  position: fixed;
+  left: -9999px;
+  padding: 0.45rem 0.8rem;
+  background: var(--color-card);
+  border: 2px solid var(--color-ring);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-foreground);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  opacity: 0.95;
+}
+
+/* ---- Staleness tiers ------------------------------------------------ */
+
+.phi-kanban-card--stale-amber :where(.phi-kanban-card-content) {
+  box-shadow: 0 0 0 1px #d4b34888 inset;
+}
+.phi-kanban-card--stale-amber:hover :where(.phi-kanban-card-content) {
+  box-shadow: 0 0 0 2px #d4b348 inset;
+}
+.phi-kanban-card--stale-red :where(.phi-kanban-card-content) {
+  box-shadow: 0 0 0 1px var(--color-destructive, #d14a4a) inset,
+              0 0 8px color-mix(in srgb, var(--color-destructive, #d14a4a) 30%, transparent);
+}
+.phi-kanban-card--stale-red:hover :where(.phi-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-destructive, #d14a4a) inset,
+              0 0 10px color-mix(in srgb, var(--color-destructive, #d14a4a) 45%, transparent);
+}
+
+/* ---- Worker log pane ------------------------------------------------ */
+
+.phi-kanban-log {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+
+/* ---- Run history (per-attempt log in the drawer) ------------------- */
+
+.phi-kanban-run {
+  border-left: 2px solid var(--color-border);
+  padding: 0.35rem 0.5rem;
+  margin-bottom: 0.4rem;
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+.phi-kanban-run--active  { border-left-color: #3fb97d; }
+.phi-kanban-run--completed { border-left-color: #4a8cd1; }
+.phi-kanban-run--ended { border-left-color: #6b7280; }  /* generic fallback when outcome is unset */
+.phi-kanban-run--blocked { border-left-color: var(--color-destructive, #d14a4a); }
+.phi-kanban-run--crashed,
+.phi-kanban-run--timed_out,
+.phi-kanban-run--gave_up,
+.phi-kanban-run--spawn_failed {
+  border-left-color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 6%, transparent);
+}
+.phi-kanban-run--reclaimed { border-left-color: #d4b348; }
+
+.phi-kanban-run-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.7rem;
+}
+.phi-kanban-run-outcome {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--color-foreground);
+}
+.phi-kanban-run-profile {
+  color: var(--color-muted-foreground);
+}
+.phi-kanban-run-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted-foreground);
+}
+.phi-kanban-run-ago {
+  margin-left: auto;
+  color: var(--color-muted-foreground);
+}
+.phi-kanban-run-summary {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  padding: 0.2rem 0 0;
+  color: var(--color-foreground);
+}
+.phi-kanban-run-error {
+  font-size: 0.7rem;
+  color: var(--color-destructive, #d14a4a);
+  padding: 0.15rem 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+/* Run metadata is a secondary detail panel. Render it as a clearly-labeled
+ * sub-block with a thin left rule, capped height, and muted treatment so
+ * a verbose JSON blob (e.g. changed_files + URLs from a writer task) does
+ * not visually swamp the parent run row or get mistaken for a crash dump.
+ * Uses a native <details>/<summary> pair so collapse is browser-handled
+ * (zero JS); large blobs default collapsed via the open=false attribute.
+ * See issue #19548. */
+.phi-kanban-run-meta-block {
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 2px solid var(--color-border);
+  background: transparent;
+}
+.phi-kanban-run-meta-block > summary.phi-kanban-run-meta-label {
+  cursor: pointer;
+  list-style: none;
+}
+.phi-kanban-run-meta-block > summary.phi-kanban-run-meta-label::-webkit-details-marker {
+  display: none;
+}
+.phi-kanban-run-meta-block > summary.phi-kanban-run-meta-label::before {
+  content: "▶ ";
+  display: inline-block;
+  font-size: 0.6rem;
+  margin-right: 0.25rem;
+  transition: transform 120ms ease;
+}
+.phi-kanban-run-meta-block[open] > summary.phi-kanban-run-meta-label::before {
+  transform: rotate(90deg);
+}
+.phi-kanban-run-meta-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--color-muted-foreground);
+  padding-bottom: 0.15rem;
+}
+.phi-kanban-run-meta {
+  display: block;
+  max-height: 8.5rem;
+  overflow: auto;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 0;
+  color: var(--color-muted-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: transparent;
+}
+
+/* -------------------------------------------------------------------------
+   Multi-project: board switcher + create-board dialog
+   ------------------------------------------------------------------------- */
+.phi-kanban-boardswitcher {
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--color-card-subtle, rgba(255, 255, 255, 0.02));
+}
+.phi-kanban-boardswitcher-inner {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.phi-kanban-boardswitcher-compact {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.25rem;
+  gap: 0.5rem;
+  align-items: center;
+}
+.phi-kanban-docs-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-muted-foreground, rgba(180, 180, 200, 0.8));
+  background: var(--color-card-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  text-decoration: none;
+  cursor: help;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.phi-kanban-docs-link:hover,
+.phi-kanban-docs-link:focus-visible {
+  color: var(--color-foreground, #e7e7ee);
+  background: var(--color-card, rgba(255, 255, 255, 0.08));
+  border-color: var(--color-border, rgba(160, 160, 190, 0.45));
+  outline: none;
+}
+.phi-kanban-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 10, 16, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.phi-kanban-dialog {
+  background: var(--color-card, #121421);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  border-radius: 0.5rem;
+  padding: 1.1rem 1.2rem 1rem;
+  width: 28rem;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+.phi-kanban-dialog-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.phi-kanban-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Hallucination warnings: per-card badge, events callout, attention      */
+/* strip, recovery popover. Orange/red palette but muted so the board     */
+/* doesn't scream on every render.                                        */
+/* ---------------------------------------------------------------------- */
+.phi-kanban-warning-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: #ff9e3b;
+  margin-left: 0.25rem;
+  cursor: help;
+}
+
+/* Attention strip — collapsed state is a thin bar. */
+.phi-kanban-attention {
+  border: 1px solid rgba(255, 158, 59, 0.35);
+  background: rgba(255, 158, 59, 0.06);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.phi-kanban-attention-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.phi-kanban-attention-icon { color: #ff9e3b; font-size: 1rem; }
+.phi-kanban-attention-text { flex: 1; }
+.phi-kanban-attention-toggle,
+.phi-kanban-attention-dismiss,
+.phi-kanban-attention-row-btn {
+  background: transparent;
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  color: inherit;
+  cursor: pointer;
+}
+.phi-kanban-attention-toggle:hover,
+.phi-kanban-attention-dismiss:hover,
+.phi-kanban-attention-row-btn:hover {
+  background: rgba(255, 158, 59, 0.12);
+}
+.phi-kanban-attention-list {
+  border-top: 1px solid rgba(255, 158, 59, 0.2);
+  padding: 0.25rem 0;
+}
+.phi-kanban-attention-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.phi-kanban-attention-row:hover {
+  background: rgba(255, 158, 59, 0.08);
+}
+.phi-kanban-attention-row-id {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+  min-width: 7rem;
+}
+.phi-kanban-attention-row-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.phi-kanban-attention-row-meta {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+
+/* Events tab — callout style for hallucination events. */
+.phi-kanban-event--hallucination {
+  border-left: 3px solid #ff6b6b;
+  background: rgba(255, 107, 107, 0.08);
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.35rem;
+  margin: 0.25rem 0;
+}
+.phi-kanban-event-header,
+.phi-kanban-event-header-plain {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.phi-kanban-event-warning-icon { color: #ff6b6b; font-size: 1rem; }
+.phi-kanban-event-warning-label {
+  color: #ff6b6b;
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+.phi-kanban-event-phantom-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+  padding-left: 1.35rem;
+}
+.phi-kanban-event-phantom-label {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #999);
+}
+.phi-kanban-event-phantom-chip {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.4rem;
+  background: rgba(255, 107, 107, 0.15);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  border-radius: 0.3rem;
+}
+
+/* Recovery section header — amber accent when the task has warnings. */
+.phi-kanban-section-head-warning { color: #ff9e3b; }
+.phi-kanban-section-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.phi-kanban-section-toggle {
+  background: transparent;
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* Recovery popover body. */
+.phi-kanban-recovery {
+  border: 1px solid rgba(120, 120, 140, 0.25);
+  background: rgba(255, 158, 59, 0.04);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.phi-kanban-recovery-title {
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+.phi-kanban-recovery-hint {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+  line-height: 1.35;
+}
+.phi-kanban-recovery-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.phi-kanban-recovery-label {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+.phi-kanban-recovery-input,
+.phi-kanban-recovery-select {
+  padding: 0.25rem 0.4rem;
+  font-size: 0.8125rem;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  color: inherit;
+  outline: none;
+}
+.phi-kanban-recovery-action-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.phi-kanban-recovery-action-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  min-width: 8rem;
+}
+.phi-kanban-recovery-action-desc {
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+.phi-kanban-recovery-btn {
+  padding: 0.25rem 0.7rem;
+  font-size: 0.75rem;
+  background: rgba(255, 158, 59, 0.15);
+  border: 1px solid rgba(255, 158, 59, 0.4);
+  border-radius: 0.3rem;
+  color: inherit;
+  cursor: pointer;
+}
+.phi-kanban-recovery-btn:hover:not(:disabled) {
+  background: rgba(255, 158, 59, 0.25);
+}
+.phi-kanban-recovery-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.phi-kanban-recovery-reassign-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.phi-kanban-recovery-checkbox {
+  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.phi-kanban-recovery-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.phi-kanban-recovery-cmd {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  flex: 1;
+  min-width: 10rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.phi-kanban-recovery-msg {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.3rem;
+}
+.phi-kanban-recovery-msg--ok {
+  background: rgba(120, 200, 120, 0.12);
+  color: #6bc46b;
+  border: 1px solid rgba(120, 200, 120, 0.3);
+}
+.phi-kanban-recovery-msg--err {
+  background: rgba(255, 107, 107, 0.12);
+  color: #ff8b8b;
+  border: 1px solid rgba(255, 107, 107, 0.3);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Diagnostics — generic, severity-coloured distress signals on tasks.    */
+/* Three rungs: warning (amber), error (orange), critical (red).          */
+/* ---------------------------------------------------------------------- */
+
+/* Severity token variables so every diagnostic-coloured surface uses the */
+/* same palette. Chained through the host's theme tokens (the dashboard    */
+/* theme engine writes --color-* on <html>) so the rungs follow the active  */
+/* theme like every other colour here; the literals are only the fallback  */
+/* for hosts that define no tokens. Declared on the consuming elements, not */
+/* .phi-kanban: diagnostic nodes can render outside that container.     */
+.phi-kanban-diag,
+.phi-kanban-attention,
+.phi-kanban-warning-badge,
+.phi-kanban-attention-row {
+  --phi-diag-warning:  var(--color-warning, #ff9e3b);
+  --phi-diag-error:    var(--color-destructive, #ff6b3d);
+  --phi-diag-critical: var(--color-destructive, #ff4d4d);
+}
+
+/* Warning-badge severity variants (overrides the base colour). */
+.phi-kanban-warning-badge--warning { color: var(--phi-diag-warning); }
+.phi-kanban-warning-badge--error   { color: var(--phi-diag-error); font-weight: 700; }
+.phi-kanban-warning-badge--critical { color: var(--phi-diag-critical); font-weight: 700; }
+
+/* Attention-strip severity variants. */
+.phi-kanban-attention--warning {
+  border-color: rgba(255, 158, 59, 0.35);
+  background: rgba(255, 158, 59, 0.06);
+}
+.phi-kanban-attention--error {
+  border-color: rgba(255, 107, 61, 0.45);
+  background: rgba(255, 107, 61, 0.08);
+}
+.phi-kanban-attention--critical {
+  border-color: rgba(255, 77, 77, 0.55);
+  background: rgba(255, 77, 77, 0.10);
+}
+.phi-kanban-attention--error .phi-kanban-attention-icon { color: var(--phi-diag-error); }
+.phi-kanban-attention--critical .phi-kanban-attention-icon { color: var(--phi-diag-critical); }
+
+/* Per-row severity marker in the expanded attention list. */
+.phi-kanban-attention-row-sev {
+  display: inline-block;
+  min-width: 1.5rem;
+  font-weight: 600;
+}
+.phi-kanban-attention-row--warning .phi-kanban-attention-row-sev { color: var(--phi-diag-warning); }
+.phi-kanban-attention-row--error    .phi-kanban-attention-row-sev { color: var(--phi-diag-error); font-weight: 700; }
+.phi-kanban-attention-row--critical .phi-kanban-attention-row-sev { color: var(--phi-diag-critical); font-weight: 700; }
+
+/* Individual diagnostic card inside the drawer's Diagnostics section. */
+.phi-kanban-diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.phi-kanban-diag {
+  border-left: 3px solid var(--phi-diag-warning);
+  background: rgba(255, 158, 59, 0.05);
+  border-radius: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.phi-kanban-diag--error {
+  border-left-color: var(--phi-diag-error);
+  background: rgba(255, 107, 61, 0.06);
+}
+.phi-kanban-diag--critical {
+  border-left-color: var(--phi-diag-critical);
+  background: rgba(255, 77, 77, 0.07);
+}
+.phi-kanban-diag-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.phi-kanban-diag-sev {
+  font-weight: 700;
+  min-width: 1.5rem;
+}
+.phi-kanban-diag--warning .phi-kanban-diag-sev { color: var(--phi-diag-warning); }
+.phi-kanban-diag--error    .phi-kanban-diag-sev { color: var(--phi-diag-error); }
+.phi-kanban-diag--critical .phi-kanban-diag-sev { color: var(--phi-diag-critical); }
+.phi-kanban-diag-title {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+.phi-kanban-diag-detail {
+  font-size: 0.8125rem;
+  color: var(--color-foreground, #ccc);
+  line-height: 1.4;
+}
+.phi-kanban-diag-data {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+}
+.phi-kanban-diag-data-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.phi-kanban-diag-data-key {
+  color: var(--color-muted-foreground, #888);
+  font-weight: 500;
+}
+.phi-kanban-diag-data-val {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.phi-kanban-diag-reassign-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+}
+.phi-kanban-diag-reassign-label {
+  color: var(--color-muted-foreground, #888);
+}
+.phi-kanban-diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+}
+.phi-kanban-diag-action-btn {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.phi-kanban-diag-action-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.3);
+}
+.phi-kanban-diag-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.phi-kanban-diag-action-btn--suggested {
+  background: rgba(255, 158, 59, 0.15);
+  border-color: rgba(255, 158, 59, 0.4);
+  font-weight: 600;
+}
+.phi-kanban-diag-action-btn--suggested:hover:not(:disabled) {
+  background: rgba(255, 158, 59, 0.25);
+}
+.phi-kanban-diag-action-btn--unknown {
+  opacity: 0.6;
+  cursor: default;
+}
+.phi-kanban-diag-msg {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.3rem;
+}
+.phi-kanban-diag-msg--ok {
+  background: rgba(120, 200, 120, 0.12);
+  color: #6bc46b;
+  border: 1px solid rgba(120, 200, 120, 0.3);
+}
+.phi-kanban-diag-msg--err {
+  background: rgba(255, 107, 61, 0.12);
+  color: #ff8b6b;
+  border: 1px solid rgba(255, 107, 61, 0.3);
+}
+/* ---- Partial failure highlight --------------------------------------- */
+.phi-kanban-card--failed :where(.phi-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-destructive, #d14a4a) inset,
+              0 0 8px color-mix(in srgb, var(--color-destructive, #d14a4a) 30%, transparent);
+}
+
+/* ---- Larger checkbox hit target -------------------------------------- */
+.phi-kanban-card-check-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: -0.3rem;
+  cursor: pointer;
+}
+.phi-kanban-card-check {
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Column select-all checkbox -------------------------------------- */
+.phi-kanban-col-check {
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: 0 0.15rem 0 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Bulk action bar extras ------------------------------------------ */
+.phi-kanban-bulk-priority {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.phi-kanban-bulk-reclaim-first {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+/* ---- Trash drop zone ------------------------------------------------- */
+
+.phi-kanban-trash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.75rem 0.5rem;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+  min-height: 80px;
+  opacity: 0.5;
+  transition: opacity 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  user-select: none;
+  pointer-events: none;
+}
+
+.phi-kanban-trash--active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.phi-kanban-trash--drop {
+  border-color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 8%, var(--color-card));
+  color: var(--color-destructive, #d14a4a);
+}
+
+.phi-kanban-trash-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.phi-kanban-trash-label {
+  font-weight: 500;
+}

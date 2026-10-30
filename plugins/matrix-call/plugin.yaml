@@ -1,0 +1,3 @@
+name: matrix-call
+version: 1.0.0
+description: Answer Element X (MatrixRTC) calls from allowed callers and talk through Phi; speech via the LiveKit worker in worker/.

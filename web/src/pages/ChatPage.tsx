@@ -1,0 +1,1844 @@
+/**
+ * ChatPage — embeds `phi --tui` inside the dashboard.
+ *
+ *   <div host> (dashboard chrome)                                         .
+ *     └─ <div wrapper> (rounded, dark bg, padded — the "terminal window"  .
+ *         look that gives the page a distinct visual identity)            .
+ *         └─ @xterm/xterm Terminal (WebGL renderer, Unicode 11 widths)    .
+ *              │ onData      keystrokes → WebSocket → PTY master          .
+ *              │ onResize    terminal resize → `\x1b[RESIZE:cols;rows]`   .
+ *              │ write(data) PTY output bytes → VT100 parser              .
+ *              ▼                                                          .
+ *     WebSocket /api/pty?token=<session>                                  .
+ *          ▼                                                              .
+ *     FastAPI pty_ws  (phi_cli/web_server.py)                          .
+ *          ▼                                                              .
+ *     POSIX PTY → `node ui-tui/dist/entry.js` → tui_gateway + AIAgent     .
+ */
+
+import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Terminal } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
+import { Button } from "@phi/ui/ui/components/button";
+import { cn } from "@/lib/utils";
+import { RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useNavigate, useSearchParams } from "react-router";
+
+import { ChatSidebar } from "@/components/ChatSidebar";
+import { ChatFooter } from "@/components/shell/ChatFooter";
+import { ChatHeader, type ChatHeaderActionsProps, type ChatModelEntry } from "@/components/shell/ChatHeader";
+import { useEdgeSwipe } from "@/components/shell/room-gestures";
+import { takeOpenSeed } from "@/components/shell/start-new-chat";
+import { uploadIntoRoom } from "@/components/shell/room-upload";
+import { fmt, useShellStrings } from "@/components/shell/use-shell-strings";
+import { useStickyCtrl } from "@/components/shell/use-sticky-ctrl";
+import { useOptionalWorkspaceShell } from "@/components/shell/WorkspaceShellContext";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { api } from "@/lib/api";
+import { AGENT_ROOM_ID } from "@/lib/api-workspace";
+import { latchChatActivation } from "@/lib/chat-activation";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { normalizeSessionTitle } from "@/lib/chat-title";
+import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
+import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
+import {
+  PTY_CONNECTING_TIMEOUT_MS,
+  PTY_KEEPALIVE_INTERVAL_MS,
+  PTY_RECONNECT_INPUT_MESSAGE,
+  PTY_RECONNECT_MAX_ATTEMPTS,
+  PTY_RESUME_RECONNECT_THROTTLE_MS,
+  PTY_RESUME_SANITIZE_WINDOW_MS,
+  PTY_TICKET_TIMEOUT_MS,
+  type PtyConnectionState,
+  ptyReconnectDelayMs,
+  shouldBlockPtyInput,
+  shouldReconnectPtyOnPageResume,
+} from "@/lib/pty-reconnect";
+import {
+  PTY_RESUME_LOADING_MAX_MS,
+  PTY_RESUME_LOADING_MESSAGE,
+  shouldFinishResumeHydrationOnChunk,
+  shouldShowResumeLoadingOverlay,
+} from "@/lib/pty-resume-loading";
+import {
+  MOBILE_REPLACEMENT_WINDOW_MS,
+  normalizePtyMobileInput,
+  shouldTreatInputAsMobileReplacement,
+} from "@/lib/pty-mobile-input";
+import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
+import {
+  resolvePtyKeyboardShortcut,
+  sendPtyShortcutSequence,
+} from "@/lib/pty-keyboard-shortcuts";
+import {
+  isViewportPinnedToBottom,
+  parseResumeControlMessage,
+  shouldFollowPtyOutput,
+} from "@/lib/pty-scroll";
+import { installTerminalTouchScroll } from "@/lib/terminal-touch-scroll";
+import { parentsOf } from "@/lib/workspace-tree";
+import { uploadChatImage } from "@/lib/chatImagePaste";
+import { attachChatImageDropListeners } from "@/lib/chat-image-drop";
+import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
+import {
+  PTY_GAVE_UP_BANNER,
+  PTY_RECONNECTING_BANNER,
+  PTY_SESSION_ENDED_MESSAGE,
+  PTY_SESSION_ENDED_TERMINAL_LINE,
+  PTY_START_FAILED_MESSAGE,
+  PTY_TOKEN_MISSING_BANNER,
+  ptyReconnectExhausted,
+  ptyRejectionBanner,
+  type PtyBannerAction,
+} from "@/lib/pty-close-copy";
+import { ptyAttachToken } from "@/lib/pty-attach-token";
+import {
+  refitWhenTerminalFontLoads,
+  TERMINAL_FONT_FAMILY,
+} from "@/lib/terminal-font-refit";
+import { generateChannelId } from "@/lib/chat-channel-id";
+import { textNeedsDomShaping } from "@/lib/xterm-webgl-gating";
+import { loseWebglContexts } from "@/lib/xterm-webgl-release";
+import {
+  buildTerminalTheme,
+  DEFAULT_TERMINAL_BACKGROUND,
+  DEFAULT_TERMINAL_FOREGROUND,
+  readTerminalFontAdjust,
+  terminalFontSizeForWidth,
+  terminalLineHeightForWidth,
+  terminalTierWidthPx,
+} from "@/lib/terminal-appearance";
+import { PluginSlot } from "@/plugins";
+import { useTheme } from "@/themes";
+import { useProfileScope } from "@/contexts/useProfileScope";
+import { useBelowBreakpoint } from "@phi/ui/hooks/use-below-breakpoint";
+import { errorMessage } from "@/lib/api-error";
+import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
+
+
+// Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
+// second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
+// taking over this one. See #115304.
+
+export interface ChatPageProps {
+  isActive?: boolean;
+  /** Voice input lands here (next to the font controls; the phone bottom bar's 64px slot). */
+  composerAccessory?: ReactNode;
+  /** Header action slots (plan / computer / ledger / rules panels). */
+  headerActions?: ChatHeaderActionsProps;
+  /** Told the current channel/room and handed a PTY writer whenever they change. */
+  onBridge?: (bridge: ChatBridge) => void;
+}
+
+export interface ChatBridge {
+  channel: string;
+  roomId: string | null;
+  /** Raw bytes to the terminal session; false while it is not connected. */
+  writePty: (data: string) => boolean;
+}
+
+export default function ChatPage({ isActive = true, composerAccessory, headerActions, onBridge }: ChatPageProps) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const termWrapRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const isActiveRef = useRef(isActive);
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
+  const stickToBottomRef = useRef(true);
+  // Exposed to the main metrics-sync effect so it can refit the terminal
+  // the moment `isActive` flips back to true (display:none → display:flex
+  // collapses the host's box, so ResizeObserver never fires on return).
+  const syncMetricsRef = useRef<(() => void) | null>(null);
+  // Per-device A-/A+ offset; read by the metrics sync so a step refits in place.
+  const fontAdjustRef = useRef(readTerminalFontAdjust());
+  // NS-434 follow-up: the keyboard-inset sync + reset closures from the main
+  // PTY effect, exposed to the visibility-gated listener effect below.
+  // ChatPage stays mounted (hidden) on every dashboard route, so the
+  // visualViewport listeners must only be attached while /chat is the active
+  // tab — otherwise the scroll pin fires when a soft keyboard opens on
+  // Settings etc. and fights iOS's own focus-scroll behavior there.
+  const keyboardInsetSyncRef = useRef<(() => void) | null>(null);
+  const keyboardInsetResetRef = useRef<(() => void) | null>(null);
+  // Sticky activation latch: the PTY-connect effect below must not open
+  // `/api/pty` until the chat tab has actually been active at least once.
+  // The dashboard mounts ChatPage persistently (hidden) on every route, so
+  // without this gate merely loading /sessions, /system, etc. would spawn the
+  // TUI/agent bootstrap (`Installing TUI dependencies…`). Latching keeps the
+  // PTY alive across later tab switches (the persistence UX) — once true it
+  // stays true.
+  const [hasActivated, setHasActivated] = useState(isActive);
+  useEffect(() => {
+    setHasActivated((prev) => latchChatActivation(prev, isActive));
+  }, [isActive]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Lazy-init: the missing-token check happens at construction so the effect
+  // body doesn't have to setState (React 19's set-state-in-effect rule).
+  // In gated (OAuth) mode the server intentionally omits the session token —
+  // the dashboard API layer authenticates the WS via a single-use ticket,
+  // so a missing token there is expected, not an error.
+  const tokenMissing =
+    typeof window !== "undefined" &&
+    !window.__PHI_SESSION_TOKEN__ &&
+    !window.__PHI_AUTH_REQUIRED__;
+  const [banner, setBanner] = useState<string | null>(() =>
+    tokenMissing ? PTY_TOKEN_MISSING_BANNER.text : null,
+  );
+  // Which one-click fix (if any) the banner offers next to its text.
+  const [bannerAction, setBannerAction] = useState<PtyBannerAction>(() =>
+    tokenMissing ? PTY_TOKEN_MISSING_BANNER.action : null,
+  );
+  // True after the automatic reconnect ladder used its last attempt: the
+  // overlay then says so and offers "Check server status" alongside Reconnect.
+  const [reconnectGaveUp, setReconnectGaveUp] = useState(false);
+  const reconnectGaveUpRef = useRef(false);
+  useEffect(() => {
+    reconnectGaveUpRef.current = reconnectGaveUp;
+  }, [reconnectGaveUp]);
+  // Why ptyState is "ended": the agent process exited (/exit or crash), or the
+  // server could not start it at all (close 1011; the reason is in the terminal).
+  const [endedReason, setEndedReason] = useState<"exited" | "start-failed">("exited");
+  const navigate = useNavigate();
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const forceFreshPtyRef = useRef(false);
+  const blockedInputNoticeRef = useRef(false);
+  const lastResumeReconnectAtRef = useRef(0);
+  // True from the moment the connect effect begins until the socket resolves
+  // (open or close). Guards the page-resume reconnect against firing during
+  // the async ticket/URL await gap where wsRef.current is not yet assigned.
+  const connectInFlightRef = useRef(false);
+  const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ptyInputLineRef = useRef("");
+  const mobileReplacementInputUntilRef = useRef(0);
+  const [ptyState, setPtyState] = useState<PtyConnectionState>("connecting");
+  const ptyStateRef = useRef<PtyConnectionState>("connecting");
+  // True until the first real PTY payload arrives for a resumed session.
+  // Covers the blank terminal + blinking-cursor window so users don't think
+  // chat is broken; clears as soon as there is something to show.
+  const [resumeHydrating, setResumeHydrating] = useState(false);
+  // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
+  // started a new session that ended the current PTY child), the PTY socket
+  // closes with a normal code. Before this fix the terminal just printed
+  // "[session ended]" and went dead — the only recovery was a full page
+  // refresh. `ptyState === "ended"` renders an explicit "Start new session"
+  // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
+  // the connect effect, so a fresh PTY spawns in place.
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+  useEffect(() => {
+    ptyStateRef.current = ptyState;
+  }, [ptyState]);
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+  const reconnectPty = useCallback(() => {
+    forceFreshPtyRef.current = false;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
+    blockedInputNoticeRef.current = false;
+    ptyInputLineRef.current = "";
+    mobileReplacementInputUntilRef.current = 0;
+    setBanner(null);
+    setBannerAction(null);
+    setReconnectGaveUp(false);
+    setPtyState("connecting");
+    setReconnectNonce((n) => n + 1);
+  }, [clearReconnectTimer]);
+  const startFreshPty = useCallback(() => {
+    forceFreshPtyRef.current = true;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
+    blockedInputNoticeRef.current = false;
+    ptyInputLineRef.current = "";
+    mobileReplacementInputUntilRef.current = 0;
+    setBanner(null);
+    setBannerAction(null);
+    setReconnectGaveUp(false);
+    setPtyState("connecting");
+    setReconnectNonce((n) => n + 1);
+  }, [clearReconnectTimer]);
+  const startFreshDashboardChat = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+
+    next.delete("resume");
+    forceFreshPtyRef.current = true;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
+    blockedInputNoticeRef.current = false;
+    ptyInputLineRef.current = "";
+    mobileReplacementInputUntilRef.current = 0;
+    setSearchParams(next, { replace: true });
+    setBanner(null);
+    setBannerAction(null);
+    setReconnectGaveUp(false);
+    setPtyState("connecting");
+    setReconnectNonce((n) => n + 1);
+  }, [clearReconnectTimer, searchParams, setSearchParams]);
+  // Clear mobile-input tracking refs when the tab is hidden so stale state
+  // from a previous /chat visit doesn't cause the mobile-replacement logic
+  // to misfire on the next activation (#106403: repeated last character).
+  useEffect(() => {
+    if (!isActive) {
+      clearReconnectTimer();
+      ptyInputLineRef.current = "";
+      mobileReplacementInputUntilRef.current = 0;
+    }
+  }, [clearReconnectTimer, isActive]);
+  const { setTitle } = usePageHeader();
+  const [sessionTitleState, setSessionTitleState] = useState<{
+    scope: string;
+    title: string | null;
+  }>({ scope: "", title: null });
+  const isPhone = useBelowBreakpoint(768);
+  const shell = useOptionalWorkspaceShell();
+  const shellStrings = useShellStrings();
+  const { active: ctrlActive, set: setCtrlActive, applyRef: ctrlApplyRef } = useStickyCtrl();
+
+  const { theme } = useTheme();
+  const terminalBg = theme.terminalBackground ?? DEFAULT_TERMINAL_BACKGROUND;
+  const terminalFg = theme.terminalForeground ?? DEFAULT_TERMINAL_FOREGROUND;
+  const terminalTheme = useMemo(
+    () => buildTerminalTheme(terminalBg, terminalFg),
+    [terminalBg, terminalFg],
+  );
+  // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
+  // switches. That is great for ordinary /chat navigation, but it means query
+  // param changes do NOT remount the component. Resume-in-chat from the
+  // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
+  // treat the current resume target as part of the PTY identity and rebuild the
+  // terminal session when it changes.
+  const resumeParam = searchParams.get("resume");
+  // Profile-scoped chat: spawn the PTY under the globally selected
+  // management profile. Changing it remounts the terminal (key below /
+  // effect dep) so the user explicitly starts a fresh scoped session.
+  const { profile: scopedProfile } = useProfileScope();
+  // Workspace room (`?room=`): its session runs in the room's directory. In the
+  // workspace shell a plain /chat is the agent DM: the first connect already
+  // carries it, and the URL catches up below so the room list marks it.
+  const inShell = shell != null;
+  const urlRoom = searchParams.get("room");
+  const roomParam = urlRoom ?? (inShell && !resumeParam ? AGENT_ROOM_ID : null);
+  useEffect(() => {
+    if (!isActive || !inShell || resumeParam || urlRoom) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("room", AGENT_ROOM_ID);
+    setSearchParams(next, { replace: true });
+  }, [isActive, inShell, resumeParam, urlRoom, searchParams, setSearchParams]);
+  const channel = useMemo(
+    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}\0${roomParam ?? ""}`),
+    [resumeParam, roomParam, scopedProfile],
+  );
+  // Raw bytes to the PTY without focusing the terminal; false while it is not connected.
+  const writePty = useCallback((data: string) => {
+    const ws = wsRef.current;
+    if (ws?.readyState !== WebSocket.OPEN) return false;
+    ws.send(data);
+    return true;
+  }, []);
+  useEffect(() => {
+    onBridge?.({ channel, roomId: roomParam, writePty });
+  }, [onBridge, channel, roomParam, writePty]);
+  // The phone's Room sheet shows the model; the chip lives in the desktop footer only.
+  const [chatModel, setChatModel] = useState<ChatModelEntry | null>(null);
+  const titleScope = `${channel}\0${reconnectNonce}`;
+  const sessionTitle =
+    sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
+  // A room is named from its chat (first message, then the model's title):
+  // each title event reloads the room's space listing so the new name shows.
+  const loadShellRooms = shell?.loadRooms;
+  const shellTree = shell?.tree ?? null;
+  const roomSpace = roomParam && shellTree ? (parentsOf(shellTree, roomParam)[0] ?? null) : null;
+  const roomDir = (roomParam && shell?.rooms[roomParam]?.path) || null;
+  const handleSessionTitleChange = useCallback(
+    (title: string | null) => {
+      setSessionTitleState({ scope: titleScope, title });
+      if (roomParam) void loadShellRooms?.(roomSpace);
+    },
+    [titleScope, roomParam, loadShellRooms, roomSpace],
+  );
+
+  useEffect(() => {
+    if (!isActive) {
+      setTitle(null);
+      return;
+    }
+
+    setTitle(sessionTitle);
+    return () => setTitle(null);
+  }, [isActive, sessionTitle, setTitle]);
+
+  useEffect(() => {
+    if (!resumeParam) return;
+
+    let cancelled = false;
+
+    api
+      .getSessionDetail(resumeParam, scopedProfile)
+      .then((session) => {
+        if (cancelled) return;
+        handleSessionTitleChange(normalizeSessionTitle(session.title));
+      })
+      .catch(() => {
+        // Best-effort: the PTY-side session.info stream can still supply it.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam, scopedProfile, handleSessionTitleChange]);
+
+  useEffect(() => {
+    if (!resumeParam) return;
+
+    let cancelled = false;
+
+    api
+      .getSessionLatestDescendant(resumeParam, scopedProfile)
+      .then((res) => {
+        if (cancelled || !res.session_id || res.session_id === resumeParam) {
+          return;
+        }
+
+        const next = new URLSearchParams(searchParams);
+        next.set("resume", res.session_id);
+        setSearchParams(next, { replace: true });
+      })
+      .catch(() => {
+        // Best-effort: old servers or missing sessions should not block chat.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam, scopedProfile, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
+    // until the chat tab has been activated. Prevents the persistently
+    // mounted, hidden ChatPage from opening `/api/pty` on every dashboard
+    // page. Sticky, so switching away from /chat keeps the PTY alive.
+    if (!hasActivated) return;
+
+    const host = hostRef.current;
+    if (!host) return;
+    // Captured once so the effect cleanup doesn't re-read the ref (which
+    // may point elsewhere by then — react-hooks/exhaustive-deps).
+    const termWrap = termWrapRef.current;
+
+    const token = window.__PHI_SESSION_TOKEN__;
+    const gated = !!window.__PHI_AUTH_REQUIRED__;
+    // Banner already initialised above; just bail before wiring xterm/WS.
+    // In gated mode the token is absent by design — api.buildWsUrl() mints
+    // a WS ticket instead, so don't bail; let the effect reach that path.
+    if (!token && !gated) {
+      return;
+    }
+
+    const tierW0 = terminalTierWidthPx(host);
+    const term = new Terminal({
+      allowProposedApi: true,
+      cursorBlink: true,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: terminalFontSizeForWidth(tierW0, fontAdjustRef.current),
+      lineHeight: terminalLineHeightForWidth(tierW0),
+      letterSpacing: 0,
+      fontWeight: "400",
+      fontWeightBold: "700",
+      macOptionIsMeta: true,
+      // Hold Option (Alt on Linux/Windows) to force native text selection
+      // even when the inner Phi TUI has enabled xterm mouse-events
+      // mode (CSI ?1000h family). Without this, click-and-drag in the
+      // chat canvas selects nothing and Cmd+C falls back to copying the
+      // entire visible buffer, which is rarely what the user wants.
+      // See #25720.
+      macOptionClickForcesSelection: true,
+      // Right-click selects the word under the pointer. xterm.js default
+      // is false; enabling it gives users a single-action selection
+      // path on top of the modifier-based bypass above.
+      rightClickSelectsWord: true,
+      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
+      // history in xterm.js so the browser wheel can scroll it directly.
+      scrollback: 5000,
+      screenReaderMode: true, // AT textarea; composer a11y (#36784)
+      theme: terminalTheme,
+    });
+    termRef.current = term;
+
+    // --- Clipboard integration ---------------------------------------
+    //
+    // Four independent paths all route to the system clipboard:
+    //
+    //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
+    //      in useInputHandlers.ts turns Ctrl+C into a copy when the
+    //      terminal has a selection, then emits an OSC 52 escape.  Our
+    //      OSC 52 handler below decodes that escape and writes to the
+    //      browser clipboard — so the flow works just like it does in
+    //      `phi --tui`.
+    //
+    //   2. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
+    //      operates directly on xterm's selection, useful if the TUI
+    //      ever stops listening (e.g. overlays / pickers) or if the user
+    //      has selected with the mouse outside of Ink's selection model.
+    //
+    //   3. **Ctrl/Cmd+Shift+V.**  Prefers clipboard.read() for images
+    //      (upload → `/image`), else readText() into term.paste().
+    //      preventDefault here suppresses the DOM paste event, so image
+    //      handling must live in this key path — not only the host
+    //      listener below.
+    //
+    //   4. **DOM paste / drop on the host.**  Bare Ctrl+V and context-menu
+    //      paste fire a ClipboardEvent; drag-drop lands files. Image
+    //      payloads upload to PHI_HOME/images then drive `/image`.
+    //
+    // OSC 52 reads (terminal asking to read the clipboard) are not
+    // supported — that would let any content the TUI renders exfiltrate
+    // the user's clipboard.
+    term.parser.registerOscHandler(52, (data) => {
+      // Format: "<targets>;<base64 | '?'>"
+      const semi = data.indexOf(";");
+      if (semi < 0) return false;
+      const payload = data.slice(semi + 1);
+      if (payload === "?" || payload === "") return false; // read/clear — ignore
+      try {
+        const binary = atob(payload);
+        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+        const text = new TextDecoder("utf-8").decode(bytes);
+        // copyTextToClipboard falls back to a selection-based copy when the
+        // Clipboard API is unavailable (plain-HTTP deployments) or when the
+        // write is rejected — e.g. the OSC 52 response arriving outside the
+        // original keydown event's activation ("user gesture" requirement).
+        void copyTextToClipboard(text).then((copied) => {
+          if (!copied) {
+            console.warn("[dashboard clipboard] OSC 52 write failed");
+          }
+        });
+      } catch {
+        console.warn("[dashboard clipboard] malformed OSC 52 payload");
+      }
+      return true;
+    });
+
+    const isMac =
+      typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+
+    // ── Image paste / drop ───────────────────────────────────────────────
+    // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
+    // clipboard.paste / xclip never see the browser clipboard, so image paste
+    // must upload browser bytes to PHI_HOME/images, then drive `/image`
+    // over the PTY (a short burst, then Return).
+    let imageUploadDisposed = false;
+    const pasteDelay = () =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, 40));
+    const reportImageUploadError = (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[dashboard chat] image upload failed:", message);
+      setBanner(`Image upload failed: ${message}`);
+    };
+    const driveImageAttach = async (paths: string[]) => {
+      for (const path of paths) {
+        if (imageUploadDisposed) return;
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          setBanner(
+            "Image uploaded, but chat is not connected — try again.",
+          );
+          return;
+        }
+        ws.send(`/image ${path}`);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+        const s = wsRef.current;
+        if (!s || s.readyState !== WebSocket.OPEN) return;
+        s.send("\r");
+        await pasteDelay();
+      }
+      term.focus();
+    };
+    const uploadAndAttachImages = (files: File[]) => {
+      if (!files.length) return;
+      void (async () => {
+        const paths: string[] = [];
+        for (const file of files) {
+          const uploaded = await uploadChatImage(file, scopedProfile);
+          if (imageUploadDisposed) return;
+          paths.push(uploaded.path);
+        }
+        await driveImageAttach(paths);
+      })().catch(reportImageUploadError);
+    };
+    const handleBrowserDropCleanup = attachChatImageDropListeners(
+      host,
+      uploadAndAttachImages,
+      (text) => term.paste(text),
+    );
+
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true;
+
+      // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
+      // key handler per Terminal, so a second registration overwrites this one.
+      if (ev.key === "Tab") return false;
+
+      // Copy: Cmd+C on macOS, Ctrl+C or Ctrl+Shift+C elsewhere. Copy only
+      // when xterm has a selection; without one Ctrl+C still reaches the TUI
+      // as SIGINT.
+      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey;
+      // Paste on BARE Ctrl+V too (not only Ctrl+Shift+V). Bare Ctrl+V otherwise
+      // falls through to the TUI, whose server-side clipboard read can't see the
+      // browser/OS clipboard → "No image found in clipboard". Routing Ctrl+V
+      // through the same navigator.clipboard path below makes it paste
+      // image-or-text correctly, like Ctrl+Shift+V.
+      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey;
+
+      const terminalSelection = term.getSelection();
+      const shortcut = resolvePtyKeyboardShortcut(
+        ev,
+        isMac,
+        Boolean(terminalSelection),
+      );
+
+      if (
+        (shortcut === "copy" ||
+          (copyModifier && ev.shiftKey && ev.key.toLowerCase() === "c")) &&
+        terminalSelection
+      ) {
+        // Direct copy inside the keydown handler preserves the user
+        // gesture — async round-trips through OSC 52 can lose activation
+        // and fail with "Document is not focused". copyTextToClipboard
+        // additionally covers insecure (plain-HTTP) contexts where the
+        // Clipboard API is unavailable.
+        void copyTextToClipboard(terminalSelection).then((copied) => {
+          if (!copied) {
+            console.warn("[dashboard clipboard] direct copy failed");
+          }
+        });
+        // Clear xterm.js's highlight after copy (matches gnome-terminal).
+        term.clearSelection();
+        ev.preventDefault();
+        return false;
+      }
+
+      // Ctrl+Backspace → delete previous word. xterm.js sends bare DEL
+      // regardless of modifier, so word-delete never reaches the TUI on its
+      // own. Send ^W (0x17), which readline / prompt_toolkit treat as
+      // delete-word-backward. (Ctrl+W can't be used in a browser tab — it's a
+      // reserved shortcut that closes the tab and preventDefault has no effect;
+      // for Ctrl+W muscle memory use the Electron desktop app.)
+      if (shortcut === "delete-word-backward") {
+        ev.preventDefault();
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\x17");
+        return false;
+      }
+
+      // Ctrl+Delete → delete next word. Mirror of Ctrl+Backspace; sends Alt+d
+      // (ESC d), the readline / prompt_toolkit kill-word-forward binding.
+      if (shortcut === "delete-word-forward") {
+        ev.preventDefault();
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\x1bd");
+        return false;
+      }
+
+      if (pasteModifier && ev.key.toLowerCase() === "v") {
+        // preventDefault suppresses the DOM paste event, so image paste must
+        // be handled here via clipboard.read() — readText() alone misses
+        // image-only clipboards (the Discord / #24860 failure mode).
+        ev.preventDefault();
+        void (async () => {
+          try {
+            const read = navigator.clipboard?.read;
+            if (typeof read === "function") {
+              const items = await read.call(navigator.clipboard);
+              const files: File[] = [];
+              for (const item of items) {
+                const type = item.types.find((t) => t.startsWith("image/"));
+                if (!type) continue;
+                const blob = await item.getType(type);
+                const ext = type.split("/")[1]?.split("+")[0] || "png";
+                files.push(
+                  new File([blob], `clipboard.${ext}`, { type }),
+                );
+              }
+              if (files.length) {
+                uploadAndAttachImages(files);
+                return;
+              }
+            }
+          } catch {
+            /* fall through to text paste */
+          }
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text) term.paste(text);
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : String(err);
+            console.warn("[dashboard clipboard] paste failed:", message);
+          }
+        })();
+        return false;
+      }
+
+      return true;
+    });
+
+    const fit = new FitAddon();
+    fitRef.current = fit;
+    term.loadAddon(fit);
+
+    // Dashboard chat should scroll the browser-side transcript, not send
+    // mouse-wheel protocol bytes through the PTY.
+    term.attachCustomWheelEventHandler((ev) => {
+      const delta = ev.deltaY;
+      if (!delta) {
+        return false;
+      }
+
+      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
+      term.scrollLines(delta > 0 ? step : -step);
+
+      ev.preventDefault();
+      ev.stopPropagation();
+      return false;
+    });
+    const cleanupTouchScroll = installTerminalTouchScroll(host, term);
+
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
+
+    term.loadAddon(new WebLinksAddon());
+
+    let mobileInputCleanup: (() => void) | null = null;
+    // xterm occasionally drops committed dead-key/IME text instead of emitting
+    // onData. The compositionend event supplies the authoritative text.
+    let sendComposedText: (data: string) => void = () => undefined;
+    const compositionForwarder = createPtyCompositionForwarder((data) => {
+      sendComposedText(data);
+    });
+    term.open(host);
+
+    // IME composition guard (fixes #52111).
+    //
+    // React 18's root-level event delegation intercepts keydown events with
+    // keyCode 229 (the "composition in progress" signal sent by the browser
+    // during non-Latin IME input) and synthesises an onCompositionStart
+    // event.  That synthetic path sets internal composing state that
+    // interferes with xterm.js's own IME handling on its hidden textarea,
+    // causing the first keystroke of each composition chunk to be silently
+    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
+    // Firefox-based browsers, but affects any locale that uses composition
+    // events (CJK, Arabic, Hebrew).
+    //
+    // xterm.js relies on native compositionstart/compositionend on its
+    // internal textarea, not on keydown, so blocking the keyCode-229
+    // keydown from reaching React's delegation layer is safe.  The listener
+    // sits in the *capture* phase on the terminal host so it fires before
+    // the event bubbles up to the React root.
+    const _imeCompositionGuard = (e: KeyboardEvent) => {
+      if (e.keyCode === 229 || e.key === "Process") {
+        e.stopPropagation();
+      }
+    };
+    host.addEventListener("keydown", _imeCompositionGuard, true);
+
+    const textarea = term.textarea;
+    if (textarea) {
+      textarea.setAttribute("autocomplete", "off");
+      textarea.setAttribute("autocorrect", "off");
+      textarea.setAttribute("autocapitalize", "off");
+      textarea.setAttribute("spellcheck", "false");
+
+      const isMobileLike =
+        typeof navigator !== "undefined" &&
+        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+      const markReplacementInput = (ev: Event) => {
+        const input = ev as InputEvent;
+        if (
+          shouldTreatInputAsMobileReplacement(
+            input.inputType,
+            input.data,
+            isMobileLike,
+          )
+        ) {
+          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        }
+      };
+      const markCompositionEnd = (ev: CompositionEvent) => {
+        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        compositionForwarder.onCompositionEnd(ev.data);
+      };
+
+      textarea.addEventListener("beforeinput", markReplacementInput, true);
+      textarea.addEventListener("compositionend", markCompositionEnd, true);
+      mobileInputCleanup = () => {
+        textarea.removeEventListener("beforeinput", markReplacementInput, true);
+        textarea.removeEventListener("compositionend", markCompositionEnd, true);
+      };
+    }
+
+    // PHI keeps xterm's default DOM renderer: wide-screen WebGL produced blank output in real
+    // use (PHI 6d4ce225). The shaping fallback below stays wired for a future opt-in.
+    // eslint-disable-next-line prefer-const -- reassigned in the shaping fallback
+    let webglAddon: { dispose(): void } | null = null;
+
+    // Initial fit + resize observer.  fit.fit() reads the container's
+    // current bounding box and resizes the terminal grid to match.
+    //
+    // The subtle bit: the dashboard has CSS transitions on the container
+    // (backdrop fade-in, rounded corners settling as fonts load).  If we
+    // call fit() at mount time, the bounding box we measure is often 1-2
+    // cell widths off from the final size.  ResizeObserver *does* fire
+    // when the container settles, but if the pixel delta happens to be
+    // smaller than one cell's width, fit() computes the same integer
+    // (cols, rows) as before and doesn't emit onResize — so the PTY
+    // never learns the final size.  Users see truncated long lines until
+    // they resize the browser window.
+    //
+    // We force one extra fit + explicit RESIZE send after two animation
+    // frames.  rAF→rAF guarantees one layout commit between the two
+    // callbacks, giving CSS transitions and font metrics time to finalize
+    // before we take the authoritative measurement.
+    let hostSyncRaf = 0;
+    const scheduleHostSync = () => {
+      if (hostSyncRaf) return;
+      hostSyncRaf = requestAnimationFrame(() => {
+        hostSyncRaf = 0;
+        syncTerminalMetrics();
+      });
+    };
+
+    let metricsDebounce: ReturnType<typeof setTimeout> | null = null;
+    const syncTerminalMetrics = () => {
+      // display:none hosts have clientWidth/Height = 0, which fit() turns
+      // into a 1x1 terminal.  Skip entirely while hidden; the visibility
+      // effect below runs another fit as soon as the tab is shown again.
+      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+        return;
+      }
+      const w = terminalTierWidthPx(host);
+      const nextSize = terminalFontSizeForWidth(w, fontAdjustRef.current);
+      const nextLh = terminalLineHeightForWidth(w);
+      const fontChanged =
+        term.options.fontSize !== nextSize ||
+        term.options.lineHeight !== nextLh;
+      if (fontChanged) {
+        term.options.fontSize = nextSize;
+        term.options.lineHeight = nextLh;
+      }
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      if (fontChanged && term.rows > 0) {
+        try {
+          term.refresh(0, term.rows - 1);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (
+        fontChanged &&
+        wsRef.current &&
+        wsRef.current.readyState === WebSocket.OPEN
+      ) {
+        wsRef.current.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      }
+    };
+    syncMetricsRef.current = syncTerminalMetrics;
+
+    const scheduleSyncTerminalMetrics = () => {
+      if (metricsDebounce) clearTimeout(metricsDebounce);
+      metricsDebounce = setTimeout(() => {
+        metricsDebounce = null;
+        syncTerminalMetrics();
+      }, 60);
+    };
+
+    const ro = new ResizeObserver(() => scheduleHostSync());
+    ro.observe(host);
+
+    // NS-434: soft-keyboard inset. On mobile the keyboard overlays the
+    // layout viewport instead of resizing it (iOS always; Android Chrome
+    // under the default `resizes-visual` — we ask for `resizes-content`
+    // in the viewport meta, but can't rely on it). The host's bounding
+    // box therefore doesn't change when the keyboard opens, fit() computes
+    // identical (cols, rows), and Ink keeps drawing the input line under
+    // the keyboard. Measure the obscured region via visualViewport and
+    // apply it as bottom padding on the terminal wrapper — that *does*
+    // shrink the host, so the ResizeObserver refit path kicks in and the
+    // PTY re-lays-out above the keyboard.
+    let appliedKeyboardInset = 0;
+    const syncKeyboardInset = () => {
+      const wrap = termWrap;
+      if (!wrap) return;
+      const vv = window.visualViewport;
+      const inset = computeKeyboardInset(
+        vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
+        window.innerHeight,
+      );
+      if (inset !== appliedKeyboardInset) {
+        appliedKeyboardInset = inset;
+        wrap.style.paddingBottom = inset > 0 ? `${inset}px` : "";
+        scheduleHostSync();
+      }
+      const revealComposer = () => {
+        if (inset <= 0 || !vv) return;
+        try {
+          term.scrollToBottom();
+        } catch {
+          /* ignore */
+        }
+        const delta = keyboardRevealScrollDelta(host.getBoundingClientRect().bottom, {
+          height: vv.height,
+          offsetTop: vv.offsetTop,
+        });
+        if (delta) window.scrollBy(0, delta);
+      };
+      if (inset > 0) {
+        revealComposer();
+        requestAnimationFrame(() => {
+          revealComposer();
+          requestAnimationFrame(revealComposer);
+        });
+      }
+    };
+    const onViewportChange = () => {
+      syncKeyboardInset();
+      scheduleSyncTerminalMetrics();
+    };
+
+    window.addEventListener("resize", scheduleSyncTerminalMetrics);
+    // The visualViewport listeners that drive `onViewportChange` are NOT
+    // attached here: ChatPage is persistently mounted (hidden) on every
+    // dashboard route, so they are attached/detached by the isActive-gated
+    // effect below via these refs. Attaching them unconditionally made the
+    // scroll pin fire when a soft keyboard opened on any page.
+    keyboardInsetSyncRef.current = onViewportChange;
+    keyboardInsetResetRef.current = () => {
+      appliedKeyboardInset = 0;
+      if (termWrap) termWrap.style.paddingBottom = "";
+    };
+    let keyboardRevealTimer = 0;
+    const onTerminalFocus = () => {
+      onViewportChange();
+      window.clearTimeout(keyboardRevealTimer);
+      keyboardRevealTimer = window.setTimeout(onViewportChange, 350);
+    };
+    term.textarea?.addEventListener("focus", onTerminalFocus);
+    scheduleHostSync();
+    requestAnimationFrame(() => scheduleHostSync());
+
+    // Double-rAF authoritative fit.  On the second frame the layout has
+    // committed at least once since mount; fit.fit() then reads the
+    // stable container size.  We always send a RESIZE escape afterwards
+    // (even if fit's cols/rows didn't change, so the PTY has the same
+    // dims registered as our JS state — prevents a drift where Ink
+    // thinks the terminal is one col bigger than what's on screen).
+    let settleRaf1 = 0;
+    let settleRaf2 = 0;
+    settleRaf1 = requestAnimationFrame(() => {
+      settleRaf1 = 0;
+      settleRaf2 = requestAnimationFrame(() => {
+        settleRaf2 = 0;
+        syncTerminalMetrics();
+      });
+    });
+
+    // The rAF fits above still measure the fallback font if JetBrains Mono
+    // hasn't swapped in yet (#92899).
+    const stopFontRefit = refitWhenTerminalFontLoads(term, syncTerminalMetrics);
+
+    // WebSocket. In gated mode (``window.__PHI_AUTH_REQUIRED__``) this
+    // awaits a single-use ticket via /api/auth/ws-ticket before opening;
+    // in loopback mode it resolves synchronously against the injected
+    // session token. The IIFE keeps the outer effect synchronous so its
+    // ``return cleanup`` stays at the top level; handlers + disposables
+    // are hoisted to ``let`` bindings the cleanup closes over.
+    let unmounting = false;
+    // The implicit active-session fallback (no `?resume=` on the URL) only
+    // becomes known once the server's control frame arrives (see
+    // `ws.onmessage` below) — everything gated on "is this a resume replay"
+    // reads this instead of `resumeParam` directly (#93518).
+    let effectiveResume = resumeParam;
+    let onDataDisposable: { dispose(): void } | null = null;
+    let onResizeDisposable: { dispose(): void } | null = null;
+    let onScrollDisposable: { dispose(): void } | null = null;
+    let eraseSuppressionTimer: ReturnType<typeof setTimeout> | null = null;
+    let resumeMaxTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearEraseSuppressionTimer = () => {
+      if (eraseSuppressionTimer) {
+        clearTimeout(eraseSuppressionTimer);
+        eraseSuppressionTimer = null;
+      }
+    };
+    const clearResumeLoadingTimers = () => {
+      if (resumeMaxTimer) {
+        clearTimeout(resumeMaxTimer);
+        resumeMaxTimer = null;
+      }
+    };
+    const finishResumeHydration = () => {
+      clearResumeLoadingTimers();
+      if (!unmounting) {
+        setResumeHydrating(false);
+      }
+    };
+    const noteResumePtyChunk = (chunkText: string) => {
+      if (!effectiveResume || unmounting) {
+        return;
+      }
+      if (shouldFinishResumeHydrationOnChunk(chunkText)) {
+        finishResumeHydration();
+      }
+    };
+    if (resumeParam) {
+      setResumeHydrating(true);
+      resumeMaxTimer = setTimeout(
+        finishResumeHydration,
+        PTY_RESUME_LOADING_MAX_MS,
+      );
+    } else {
+      setResumeHydrating(false);
+    }
+    const forceFresh = forceFreshPtyRef.current;
+    forceFreshPtyRef.current = false;
+    // A connect attempt is now in flight — set synchronously (before the async
+    // socket-open IIFE below awaits its ticket URL) so a page-resume event in
+    // that gap doesn't fire a redundant reconnect (wsRef isn't assigned yet).
+    connectInFlightRef.current = true;
+    const clearConnectingTimer = () => {
+      if (connectingTimerRef.current) {
+        clearTimeout(connectingTimerRef.current);
+        connectingTimerRef.current = null;
+      }
+    };
+    // The pre-socket half of the connect. A ticket request that rejects or
+    // never settles leaves no socket behind, so neither `onclose` nor the
+    // NS-591 CONNECTING timer (armed after `new WebSocket` below) can recover
+    // it. `ticketSuperseded` invalidates a late ticket result so a timed-out
+    // attempt cannot open a socket behind the replacement this schedules.
+    let ticketSuperseded = false;
+    let ticketTimer: ReturnType<typeof setTimeout> | null = null;
+    let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+    const clearKeepaliveTimer = () => {
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+    };
+    const clearTicketTimer = () => {
+      if (ticketTimer) {
+        clearTimeout(ticketTimer);
+        ticketTimer = null;
+      }
+    };
+    // `code` is null when the attempt died before any socket existed — the
+    // banner then omits the "(code N)" suffix rather than inventing one.
+    const scheduleReconnect = (code: number | null) => {
+      // ChatPage remains mounted behind other dashboard routes. Do not churn
+      // through reconnect attempts while it is inactive or the document is
+      // hidden; the page-resume listener starts one when the user returns.
+      if (
+        !isActiveRef.current ||
+        (typeof document !== "undefined" && document.visibilityState === "hidden")
+      ) {
+        // Clear any stale banner (e.g. a failed image upload): the resume
+        // listener refuses to reconnect while a banner sits on a closed PTY.
+        setBanner(null);
+        setBannerAction(null);
+        setPtyState("closed");
+        return;
+      }
+      if (reconnectTimerRef.current) {
+        return;
+      }
+      if (ptyReconnectExhausted(reconnectAttemptRef.current, PTY_RECONNECT_MAX_ATTEMPTS)) {
+        // The last automatic attempt also failed: stop chasing a dead
+        // backend and tell the user so, with the manual affordances.
+        console.warn(`[chat] PTY reconnect gave up after ${PTY_RECONNECT_MAX_ATTEMPTS} attempts (last code=${code ?? "none"})`);
+        setBanner(null);
+        setBannerAction(null);
+        reconnectGaveUpRef.current = true;
+        setReconnectGaveUp(true);
+        setPtyState("closed");
+        return;
+      }
+      const attempt = reconnectAttemptRef.current + 1;
+      reconnectAttemptRef.current = attempt;
+      const delayMs = ptyReconnectDelayMs(attempt);
+      setBanner(null);
+      setBannerAction(null);
+      setPtyState("reconnecting");
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        setReconnectNonce((n) => n + 1);
+      }, delayMs);
+    };
+    // Give up on the ticket phase and hand off to the ordinary backoff.
+    const failTicketAttempt = () => {
+      ticketSuperseded = true;
+      clearTicketTimer();
+      connectInFlightRef.current = false;
+      scheduleReconnect(null);
+    };
+    void (async () => {
+      if (unmounting) return;
+      const params: Record<string, string> = { channel };
+      if (resumeParam) params.resume = resumeParam;
+      if (forceFresh) params.fresh = "1";
+      // A room's session runs in the room's directory (resolved server-side).
+      if (roomParam) params.room_id = roomParam;
+      // Keep-alive identity: reattach to this tab's living PTY across
+      // refresh/transient drops. A forced-fresh start rotates the token so
+      // the previous keep-alive PTY is not reattached (registry reaps it).
+      params.attach = await ptyAttachToken(forceFresh);
+      // Profile-scoped chat: the PTY child gets PHI_HOME pointed at the
+      // selected profile, so the conversation runs with that profile's model,
+      // skills, memory, and sessions (see web_server._resolve_chat_argv).
+      if (scopedProfile) params.profile = scopedProfile;
+
+      ticketTimer = setTimeout(() => {
+        ticketTimer = null;
+        if (unmounting || ticketSuperseded) {
+          return;
+        }
+        failTicketAttempt();
+      }, PTY_TICKET_TIMEOUT_MS);
+
+      let url: string;
+      try {
+        url = await api.buildWsUrl("/api/pty", params);
+      } catch (err) {
+        if (unmounting || ticketSuperseded) return;
+        console.warn(`[chat] PTY ticket request failed: ${errorMessage(err)}`);
+        failTicketAttempt();
+        return;
+      }
+      if (unmounting || ticketSuperseded) return;
+      clearTicketTimer();
+
+      const ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+      // W2 (NS-591): a mobile socket can wedge in CONNECTING after a radio
+      // handoff and never fire onclose, so neither the resume predicate nor
+      // scheduleReconnect can recover it. Force-close if it hasn't opened
+      // within the budget; the resulting onclose routes into scheduleReconnect.
+      clearConnectingTimer();
+      connectingTimerRef.current = setTimeout(() => {
+        connectingTimerRef.current = null;
+        if (wsRef.current === ws && ws.readyState === WebSocket.CONNECTING) {
+          try {
+            ws.close();
+          } catch {
+            /* already tearing down */
+          }
+        }
+      }, PTY_CONNECTING_TIMEOUT_MS);
+
+    ws.onopen = () => {
+      clearReconnectTimer();
+      clearConnectingTimer();
+      connectInFlightRef.current = false;
+      reconnectAttemptRef.current = 0;
+      setBanner(null);
+      setBannerAction(null);
+      setReconnectGaveUp(false);
+      setPtyState("open");
+      blockedInputNoticeRef.current = false;
+      // Connected — cancel any pending reconnect from a prior transient drop.
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      // Send the initial RESIZE immediately so Ink has *a* size to lay
+      // out against on its first paint.  The double-rAF block above will
+      // follow up with the authoritative measurement — at worst Ink
+      // reflows once after the PTY boots, which is imperceptible.
+      const sendTerminalResize = () => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+        }
+      };
+      sendTerminalResize();
+      // Application-level keepalive: browsers cannot send WS ping frames, and a
+      // loopback-bound dashboard behind a reverse proxy gets no server pings
+      // either, so a quiet PTY socket is idle traffic to any proxy timeout.
+      // Runs whenever the socket is open — a hidden tab still owns its PTY.
+      keepaliveTimer = setInterval(sendTerminalResize, PTY_KEEPALIVE_INTERVAL_MS);
+      // Resumed sessions replay scrollback over the socket. Start pinned to
+      // the bottom so the latest output is in view; released once the user
+      // scrolls up (#59591).
+      if (resumeParam) stickToBottomRef.current = true;
+      // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
+      // skill" panel) is typed into the composer as a /learn command once the
+      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
+      // so this reuses the existing composer path — no special PTY protocol.
+      const seed = takeOpenSeed(searchParams, setSearchParams);
+      if (seed) {
+        // Delay so Ink's composer has mounted and grabbed focus before input.
+        setTimeout(() => {
+          try {
+            wsRef.current?.send(seed + "\r");
+          } catch {
+            /* PTY not ready / closed — user can retype */
+          }
+        }, 800);
+      }
+    };
+
+    // Session resume: Ink's two-pass virtual scroll floods the PTY with
+    // erase codes and blank-line bursts while replaying a long session.
+    // Suppress them for a bounded window after connect, then let ordinary
+    // in-place redraws through untouched. See pty-resume-sanitizer.ts.
+    const decoder = new TextDecoder();
+    const sanitizer = new PtyResumeSanitizer();
+    const beginResumeReplay = () => {
+      stickToBottomRef.current = true;
+      if (!eraseSuppressionTimer) {
+        eraseSuppressionTimer = setTimeout(() => {
+          eraseSuppressionTimer = null;
+          sanitizer.endEraseSuppression();
+        }, PTY_RESUME_SANITIZE_WINDOW_MS);
+      }
+      if (!resumeMaxTimer) {
+        setResumeHydrating(true);
+        resumeMaxTimer = setTimeout(
+          finishResumeHydration,
+          PTY_RESUME_LOADING_MAX_MS,
+        );
+      }
+    };
+    if (resumeParam) {
+      beginResumeReplay();
+    }
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        // The active-session fallback (no `?resume=` on the URL) tells us
+        // via a one-off JSON control frame that a replay is starting (#93518,
+        // see `pty_ws` in web_server.py). Real PTY output always arrives as
+        // binary frames, so any text frame is a candidate; anything that
+        // isn't this control shape (e.g. the ANSI "Chat unavailable" banners
+        // pty_ws sends as text on failure) falls through to the write path
+        // below unchanged.
+        const resumeId = parseResumeControlMessage(ev.data);
+        if (resumeId) {
+          effectiveResume = resumeId;
+          beginResumeReplay();
+          return;
+        }
+      }
+      const text =
+        typeof ev.data === "string"
+          ? ev.data
+          : decoder.decode(new Uint8Array(ev.data as ArrayBuffer), {
+              stream: true,
+            });
+      // Gate hydration on the payload actually written to xterm. The
+      // sanitizer can turn a nonempty erase-only / all-newline / partial-CSI
+      // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
+      // would hide the wait notice while the terminal is still blank.
+      const rendered = effectiveResume ? sanitizer.next(text) : text;
+      // Resume replay lands over many write chunks; pin the viewport to the
+      // bottom as each chunk COMMITS (xterm write callback) instead of
+      // guessing with a fixed delay, and release the pin the moment the user
+      // scrolls up to read the backlog (#59591).
+      const followScroll = shouldFollowPtyOutput(
+        effectiveResume,
+        stickToBottomRef.current,
+      )
+        ? () => termRef.current?.scrollToBottom()
+        : undefined;
+      // Complex scripts (Bengali conjuncts etc.) cannot be drawn from a
+      // per-glyph atlas — the first such payload swaps to the DOM renderer,
+      // whose text shaping renders them properly (#58685). Disposing the
+      // addon makes xterm fall back and redraw on its own.
+      if (webglAddon && textNeedsDomShaping(text)) {
+        try {
+          webglAddon.dispose();
+        } catch {
+          /* already gone */
+        }
+        webglAddon = null;
+      }
+      term.write(rendered, followScroll);
+      noteResumePtyChunk(rendered);
+    };
+
+    ws.onclose = (ev) => {
+      clearKeepaliveTimer();
+      // Drain buffered sanitizer state. A buffered partial escape is dropped
+      // (writing an unterminated CSI would wedge xterm's parser); a buffered
+      // newline run is emitted collapsed.
+      if (effectiveResume) {
+        clearEraseSuppressionTimer();
+        try {
+          term.write(sanitizer.flush());
+        } catch {
+          /* ignore */
+        }
+      }
+      wsRef.current = null;
+      connectInFlightRef.current = false;
+      clearConnectingTimer();
+      if (unmounting) {
+        return;
+      }
+      // Surface the real cause to the browser console on every close so a
+      // "chat won't connect" report can be diagnosed without server access.
+      // The server sends a machine-parseable reason on every rejection (see
+      // pty_ws in web_server.py); echo it verbatim alongside the close code.
+      const why = ev.reason ? ` reason=${ev.reason}` : "";
+      console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
+      if (ev.code === 4401 && maybeReloadForLoopbackWsAuthFailure(ev.code)) {
+        return;
+      }
+      // Server-side rejections (stale token, host mismatch, no PTY endpoint,
+      // non-loopback client). `ev.reason` is a machine identifier — it went
+      // to the console above; the user gets a sentence and, where a reload
+      // fixes it, a Reload button.
+      const rejection = ptyRejectionBanner(ev.code);
+      if (rejection) {
+        setPtyState("closed");
+        setBanner(rejection.text);
+        setBannerAction(rejection.action);
+        return;
+      }
+      if (ev.code === 1011) {
+        // The server could not start the chat (node missing, bad profile,
+        // too many terminals open) and already printed why in red inside the
+        // terminal. Render the restart affordance instead of a dead pane.
+        setEndedReason("start-failed");
+        setPtyState("ended");
+        return;
+      }
+      // Keep-alive close-code contract (web_server.pty_ws + pty_session):
+      //   4410 = the agent PROCESS exited (real end) → restart affordance.
+      //   4409 = superseded by a newer tab attaching the same token → stay quiet.
+      if (ev.code === 4410) {
+        term.write(`\r\n\x1b[90m${PTY_SESSION_ENDED_TERMINAL_LINE}\x1b[0m\r\n`);
+        setEndedReason("exited");
+        setPtyState("ended");
+        return;
+      }
+      if (ev.code === 4409) {
+        setPtyState("closed");
+        return;
+      }
+      if (
+        !ev.wasClean ||
+        ev.code === 1001 ||
+        ev.code === 1006 ||
+        ev.code === 1012 ||
+        ev.code === 1013
+      ) {
+        // Transient transport drop (refresh, sleep/wake, signal loss), or a
+        // clean server-side restart signal: 1012 Service Restart / 1013 Try
+        // Again Later mean the server is coming back, so redial instead of
+        // stranding the pane on "[session ended]" (#95951).
+        scheduleReconnect(ev.code);
+        return;
+      }
+      // Normal/clean exit: the agent process ended (e.g. the user typed
+      // `/exit`, or started a new session). NS-504: surface an explicit
+      // restart affordance instead of leaving a dead terminal that only a
+      // full page refresh could recover.
+      term.write(`\r\n\x1b[90m${PTY_SESSION_ENDED_TERMINAL_LINE}\x1b[0m\r\n`);
+      setEndedReason("exited");
+      setPtyState("ended");
+    };
+
+    // Keystrokes → PTY.
+    //
+    // IMPORTANT:
+    // The embedded web chat has occasionally surfaced stray letters/digits
+    // in the input line after a turn completes. The most likely culprit is
+    // browser-side terminal control traffic being forwarded back into the
+    // PTY as if it were user text. SGR mouse tracking is the highest-risk
+    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
+    // ordinary bytes to the backend.
+    //
+    // For the browser embed we prefer input stability over terminal-style
+    // mouse reporting, so we drop SGR mouse reports entirely instead of
+    // forwarding them into Phi. Keyboard input, paste, and resize still
+    // behave normally.
+    const forwardPtyData = (data: string, useMobileReplacement = true) => {
+        // Mouse reports (scroll wheel etc.) are not typed input — swallow
+        // them before the blocked-input check so scrolling a disconnected
+        // terminal doesn't trip the "reconnecting" notice.
+        if (SGR_MOUSE_RE.test(data)) {
+          return;
+        }
+
+        if (
+          ws.readyState !== WebSocket.OPEN ||
+          shouldBlockPtyInput(ptyStateRef.current)
+        ) {
+          if (!blockedInputNoticeRef.current) {
+            blockedInputNoticeRef.current = true;
+            term.write(
+              `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
+            );
+          }
+          return;
+        }
+
+        const normalized = normalizePtyMobileInput(
+          data,
+          ptyInputLineRef.current,
+          useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
+        );
+        ptyInputLineRef.current = normalized.nextLine;
+        if (normalized.normalized) {
+          mobileReplacementInputUntilRef.current = 0;
+        }
+        ws.send(ctrlApplyRef.current(normalized.data));
+      };
+      // The deferred composition fallback is already committed text, so it
+      // must not consume the mobile replacement window intended for xterm's
+      // normal onData path.
+      sendComposedText = (data) => forwardPtyData(data, false);
+      onDataDisposable = term.onData((data) => {
+        if (!SGR_MOUSE_RE.test(data)) {
+          compositionForwarder.noteTerminalData(data);
+        }
+        // A mobile IME can re-emit just-committed composition text through
+        // onData; only the part that is not an echo of that commit is real.
+        const unechoed = compositionForwarder.filterTerminalData(data);
+        if (unechoed) {
+          forwardPtyData(unechoed);
+        }
+      });
+
+      onResizeDisposable = term.onResize(({ cols, rows }) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(`\x1b[RESIZE:${cols};${rows}]`);
+        }
+      });
+
+      // Release the stick-to-bottom pin the moment the user scrolls up, so
+      // we only auto-follow during the resume replay — not their manual
+      // review of the backlog (#59591).
+      onScrollDisposable = term.onScroll(() => {
+        stickToBottomRef.current = isViewportPinnedToBottom(term.buffer.active);
+      });
+    })();
+
+    term.focus();
+
+    return () => {
+      unmounting = true;
+      imageUploadDisposed = true;
+      syncMetricsRef.current = null;
+      clearEraseSuppressionTimer();
+      clearResumeLoadingTimers();
+      setResumeHydrating(false);
+      onDataDisposable?.dispose();
+      onResizeDisposable?.dispose();
+      onScrollDisposable?.dispose();
+      mobileInputCleanup?.();
+      compositionForwarder.dispose();
+      cleanupTouchScroll();
+      handleBrowserDropCleanup();
+      if (metricsDebounce) clearTimeout(metricsDebounce);
+      window.removeEventListener("resize", scheduleSyncTerminalMetrics);
+      window.clearTimeout(keyboardRevealTimer);
+      term.textarea?.removeEventListener("focus", onTerminalFocus);
+      keyboardInsetSyncRef.current = null;
+      keyboardInsetResetRef.current = null;
+      const wrap = termWrap;
+      if (wrap) wrap.style.paddingBottom = "";
+      ro.disconnect();
+      if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
+      if (settleRaf1) cancelAnimationFrame(settleRaf1);
+      if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      stopFontRefit();
+      clearReconnectTimer();
+      clearConnectingTimer();
+      clearTicketTimer();
+      clearKeepaliveTimer();
+      ticketSuperseded = true;
+      connectInFlightRef.current = false;
+      // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
+      // ticket fetch makes the open async). The cleanup runs at the outer
+      // effect's top level so it can't reach into that scope — close via
+      // the ref instead. ``?.`` covers the race where unmount fires before
+      // the ticket fetch resolves and ``wsRef.current`` was never assigned.
+      wsRef.current?.close();
+      wsRef.current = null;
+      host.removeEventListener("keydown", _imeCompositionGuard, true);
+      // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
+      // context alive on dispose, so a reconnect storm hits the browser's
+      // context cap and blanks the live terminal (#111909).
+      loseWebglContexts(host);
+      term.dispose();
+      termRef.current = null;
+      fitRef.current = null;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  }, [
+    hasActivated,
+    channel,
+    clearReconnectTimer,
+    resumeParam,
+    roomParam,
+    scopedProfile,
+    reconnectNonce,
+    ctrlApplyRef,
+  ]);
+
+  // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
+  // ONLY while the chat tab is actually visible. ChatPage stays mounted
+  // (display:none) on every other dashboard route, so unconditional
+  // listeners made the composer reveal (`window.scrollBy`) fire whenever a
+  // soft keyboard opened on Settings/Sessions/etc., fighting iOS Safari's
+  // own scroll-into-view for the focused input there. The handlers read
+  // through refs populated by the main PTY effect, so attach/detach here is
+  // independent of that effect's lifecycle (and a no-op before the terminal
+  // exists). On deactivation we also clear any applied inset padding so a
+  // keyboard left open during navigation can't leave the hidden terminal
+  // wrapper padded with a stale value.
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onViewportChange = () => keyboardInsetSyncRef.current?.();
+    vv.addEventListener("resize", onViewportChange);
+    // offsetTop changes (keyboard-driven visual scroll on iOS) arrive as
+    // vv `scroll` events, not `resize`.
+    vv.addEventListener("scroll", onViewportChange);
+    // Catch up on any geometry change that happened while hidden.
+    onViewportChange();
+    return () => {
+      vv.removeEventListener("resize", onViewportChange);
+      vv.removeEventListener("scroll", onViewportChange);
+      keyboardInsetResetRef.current?.();
+    };
+  }, [isActive]);
+
+  // When the user returns to the chat tab (isActive: false → true), the
+  // terminal host just transitioned from display:none to display:flex.
+  // ResizeObserver won't fire on that kind of style-driven box change —
+  // xterm thinks its grid is still whatever it was when the tab was
+  // hidden (or 0×0, if it was hidden before first fit).  Force a refit
+  // after two animation frames so layout has committed.
+  //
+  // Focus handling: we only steal focus back into the terminal when
+  // nothing else inside ChatPage was holding it (typically the first
+  // activation after mount, where document.activeElement is <body>; or
+  // a return after the user had been typing in the terminal, where
+  // focus was already on the xterm textarea before the tab got hidden
+  // and has since fallen back to <body>).  If the user had clicked
+  // into the sidebar (model picker, tool-call entry) before switching
+  // tabs, we must not yank focus away from wherever they left it when
+  // they come back — that's a surprise and an a11y foot-gun.
+  useEffect(() => {
+    if (!isActive) return;
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf1 = 0;
+      raf2 = requestAnimationFrame(() => {
+        raf2 = 0;
+        syncMetricsRef.current?.();
+        const active = typeof document !== "undefined"
+          ? document.activeElement
+          : null;
+        if (shouldRestoreTerminalFocus(active, hostRef.current)) {
+          termRef.current?.focus();
+        }
+      });
+    });
+    return () => {
+      if (raf1) cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [isActive]);
+
+  // Returning from another OS app (alt-tab to copy text, then back) lands
+  // browser focus on <body>, not on the xterm textarea, so the next Ctrl+V
+  // goes nowhere. Pull focus back into the terminal under the same
+  // ownership rule as tab activation above. This listener must not touch
+  // the PTY connection — the resume/reconnect path is separate.
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") return;
+    const onWindowFocus = () => {
+      if (shouldRestoreTerminalFocus(document.activeElement, hostRef.current)) {
+        termRef.current?.focus();
+      }
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
+  }, [isActive]);
+
+  const maybeReconnectOnPageResume = useCallback(() => {
+    const visibilityState =
+      typeof document !== "undefined" ? document.visibilityState : "visible";
+    const online =
+      typeof navigator === "undefined" ? true : navigator.onLine !== false;
+    const socketReadyState = wsRef.current?.readyState ?? null;
+
+    if (banner && ptyStateRef.current === "closed") {
+      return;
+    }
+
+    if (
+      shouldReconnectPtyOnPageResume({
+        isActive,
+        visibilityState,
+        online,
+        socketReadyState,
+        ptyState: ptyStateRef.current,
+        connectInFlight: connectInFlightRef.current,
+        reconnectGaveUp: reconnectGaveUpRef.current,
+      })
+    ) {
+      const now = Date.now();
+      if (now - lastResumeReconnectAtRef.current < PTY_RESUME_RECONNECT_THROTTLE_MS) {
+        return;
+      }
+      lastResumeReconnectAtRef.current = now;
+      reconnectPty();
+    }
+  }, [banner, isActive, reconnectPty]);
+
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") {
+      return;
+    }
+
+    const onResume = () => maybeReconnectOnPageResume();
+
+    document.addEventListener("visibilitychange", onResume);
+    window.addEventListener("pageshow", onResume);
+    window.addEventListener("focus", onResume);
+    window.addEventListener("online", onResume);
+    onResume();
+
+    return () => {
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("pageshow", onResume);
+      window.removeEventListener("focus", onResume);
+      window.removeEventListener("online", onResume);
+    };
+  }, [isActive, maybeReconnectOnPageResume]);
+
+  // Keep the live xterm theme in sync when the active theme's terminal
+  // colors change (e.g. user switches to a custom YAML theme mid-session).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = terminalTheme;
+  }, [terminalTheme]);
+
+  // Layout (column 3 of the shell):
+  //   header — room name, space breadcrumb, real directory, action slots
+  //   body — the keyboard-inset target: its bottom padding lifts everything
+  //     in it (terminal, phone key bar, footer, phone bottom bar) above a
+  //     soft keyboard
+  //   terminal window — rounded, dark, padded; a new chat's pre-session
+  //     composer covers it until the first message has created the room
+  //   footer — one right-aligned toolbar row: A-/A+, the composer accessory
+  //     (mic) and the model button. ChatSidebar opens its own JSON-RPC sidecar;
+  //     best-effort: if it fails to connect the terminal pane keeps working.
+  const reconnectBanner =
+    ptyState === "reconnecting" ? PTY_RECONNECTING_BANNER : null;
+  const visibleBanner = banner ?? reconnectBanner;
+  const showReconnectOverlay =
+    ptyState === "reconnecting" || (ptyState === "closed" && !banner);
+  const showResumeLoadingOverlay = shouldShowResumeLoadingOverlay({
+    hasResumeTarget: Boolean(resumeParam),
+    ptyState,
+    hydrating: resumeHydrating,
+  });
+  const sendToPty = (data: string) => {
+    const ws = wsRef.current;
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    ws.send(data);
+    termRef.current?.focus();
+  };
+  const backToRooms = () => shell?.setDrawerOpen(true);
+  const edgeSwipe = useEdgeSwipe(backToRooms);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2" {...(isPhone ? edgeSwipe : {})}>
+      <ChatHeader
+        roomId={roomParam}
+        title={sessionTitle}
+        actions={headerActions}
+        onBack={isPhone && shell ? backToRooms : undefined}
+        model={isPhone ? chatModel : null}
+      />
+      <PluginSlot name="chat:top" />
+
+      {visibleBanner && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-2 border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide"
+        >
+          <span className="min-w-0 flex-1">{visibleBanner}</span>
+          {banner && bannerAction === "reload" && (
+            <Button size="sm" outlined onClick={() => window.location.reload()}>
+              Reload page
+            </Button>
+          )}
+        </div>
+      )}
+
+      <div ref={termWrapRef} className="flex min-h-0 flex-1 flex-col gap-2">
+        <div
+          className={cn(
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-current/10",
+            "p-2 sm:p-3",
+          )}
+          style={{
+            backgroundColor: terminalBg,
+            boxShadow: "0 12px 40px -12px rgba(0, 0, 0, 0.55)",
+          }}
+        >
+          <div
+            ref={hostRef}
+            role="region"
+            aria-label="Chat terminal"
+            className="phi-chat-xterm-host min-h-0 min-w-0 flex-1"
+          />
+
+          {showReconnectOverlay && (
+            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
+              <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 rounded-lg border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
+                <div className="tracking-wide">
+                  {ptyState === "reconnecting"
+                    ? "Chat is reconnecting."
+                    : reconnectGaveUp
+                      ? PTY_GAVE_UP_BANNER.text
+                      : "Chat disconnected."}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={reconnectPty}
+                    prefix={<RotateCcw className="h-4 w-4" />}
+                    aria-label="Reconnect chat"
+                  >
+                    Reconnect now
+                  </Button>
+                  {ptyState === "closed" && reconnectGaveUp && (
+                    <Button
+                      size="sm"
+                      ghost
+                      onClick={() => navigate("/system")}
+                      aria-label="Check server status"
+                    >
+                      Check server status
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showResumeLoadingOverlay && (
+            <div
+              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+              role="status"
+              aria-live="polite"
+              aria-label={PTY_RESUME_LOADING_MESSAGE}
+            >
+              <div className="max-w-[min(28rem,calc(100vw-3rem))] border border-current/30 bg-black/80 px-4 py-3 text-center text-xs tracking-wide text-white/85 shadow-lg">
+                {PTY_RESUME_LOADING_MESSAGE}
+              </div>
+            </div>
+          )}
+
+          {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
+              Offer an in-place restart so the user never has to refresh the
+              whole page to get a working chat back. */}
+          {ptyState === "ended" && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
+              <div className="max-w-[min(32rem,calc(100vw-3rem))] text-center text-sm tracking-wide text-white/80">
+                {endedReason === "start-failed"
+                  ? PTY_START_FAILED_MESSAGE
+                  : PTY_SESSION_ENDED_MESSAGE}
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button
+                  onClick={startFreshPty}
+                  prefix={<RotateCcw className="h-4 w-4" />}
+                  aria-label="Start a new chat session"
+                >
+                  Start new session
+                </Button>
+                {endedReason === "exited" && (
+                  <Button
+                    outlined
+                    onClick={() => navigate("/logs")}
+                    aria-label="Open logs"
+                  >
+                    Open logs
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        <ChatFooter
+          isPhone={isPhone}
+          session
+          onSend={sendToPty}
+          onWrite={writePty}
+          ctrlActive={ctrlActive}
+          onCtrlChange={setCtrlActive}
+          onFontAdjust={(adjust) => {
+            fontAdjustRef.current = adjust;
+            syncMetricsRef.current?.();
+          }}
+          composerAccessory={composerAccessory}
+          onAddFile={
+            roomDir
+              ? (file) =>
+                  uploadIntoRoom(roomDir, file).catch((e) => {
+                    setBanner(fmt(shellStrings.uploadFailed, { error: errorMessage(e) }));
+                    throw e;
+                  })
+              : undefined
+          }
+          modelCard={
+            <ChatSidebar
+              channel={channel}
+              profile={scopedProfile}
+              onDashboardNewSessionRequest={startFreshDashboardChat}
+              onSessionTitleChange={handleSessionTitleChange}
+              chip={!isPhone}
+              onModel={setChatModel}
+            />
+          }
+        />
+      </div>
+      <PluginSlot name="chat:bottom" />
+    </div>
+  );
+}
+
+declare global {
+  interface Window {
+    __PHI_SESSION_TOKEN__?: string;
+    __PHI_AUTH_REQUIRED__?: boolean;
+  }
+}

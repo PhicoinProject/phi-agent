@@ -1,0 +1,270 @@
+---
+sidebar_position: 1
+title: "Nous Portal"
+description: "One subscription, 300+ frontier models, and the Tool Gateway — the recommended way to run Phi Agent"
+---
+
+# Nous Portal
+
+[Nous Portal](https://portal.nousresearch.com) is Nous Research's unified subscription gateway and **the recommended way to run Phi Agent**. One OAuth login replaces the juggling act of separate accounts, API keys, and billing relationships across every model lab, search API, image generator, and browser provider you'd otherwise need to wire up by hand.
+
+If you only have time to set up one thing, set up this. The fastest path:
+
+```bash
+phi setup --portal
+```
+
+That single command runs the Portal OAuth, lets you pick a Nous model, sets Nous as your inference provider in `config.yaml`, and turns on the Tool Gateway. You're ready to `phi chat` immediately after.
+
+Don't have a subscription yet? [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) — sign up, then come back and run the command above.
+
+## What's in the subscription
+
+### 300+ frontier models, one bill
+
+The Portal proxies a curated catalog of agentic models from across the ecosystem — billed against your Nous subscription instead of one credit balance per lab.
+
+| Family | Models |
+|--------|--------|
+| **Anthropic Claude** | Opus 4.7, Opus 4.6, Sonnet 4.6, Haiku 4.5 |
+| **OpenAI** | GPT-5.5, GPT-5.5 Pro, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
+| **Google Gemini** | Gemini 3 Pro Preview, Gemini 3 Flash Preview, Gemini 3.1 Pro Preview, Gemini 3.1 Flash Lite Preview |
+| **DeepSeek** | DeepSeek V4 Pro |
+| **Qwen** | Qwen3.7-Max, Qwen3.6-35B-A3B |
+| **Kimi / Moonshot** | Kimi K2.6 |
+| **GLM / Zhipu** | GLM-5.1 |
+| **MiniMax** | MiniMax M2.7 |
+| **xAI** | Grok 4.3 |
+| **NVIDIA** | Nemotron-3 Super 120B-A12B |
+| **Tencent** | Hunyuan 3 Preview |
+| **Xiaomi** | MiMo V2.5 Pro |
+| **StepFun** | Step 3.5 Flash |
+| **+ everything else** | 280+ additional models — the full agentic frontier |
+
+Under the hood, the Portal routes each model to the backend best suited for it — some models go through OpenRouter, others through proprietary or secondary providers, and the routing for a given model can change over time. Everything is billed against your Nous subscription either way. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
+
+:::note
+Because routing is per-model and not always through OpenRouter, OpenRouter-specific request extensions (such as `provider` routing preferences, `session_id` sticky routing, or top-level `cache_control`) are not part of the Portal's API contract and may be ignored depending on which backend serves the model.
+:::
+
+### The Nous Tool Gateway
+
+The same subscription unlocks the [Tool Gateway](../user-guide/features/tool-gateway.md), which routes Phi Agent's tool calls through Nous-managed infrastructure. Five backends, one login:
+
+| Tool | Partner | What it does |
+|------|---------|--------------|
+| **Web search & extract** | Nous-managed | Agent-grade search and full-page extraction. No search API key, no rate limit babysitting. |
+| **Image generation** | FAL | Nine models under one endpoint: FLUX 2 Klein 9B, FLUX 2 Pro, Z-Image Turbo, Nano Banana Pro (Gemini 3 Pro Image), GPT Image 1.5, GPT Image 2, Ideogram V3, Recraft V4 Pro, Qwen Image. |
+| **Text-to-speech** | OpenAI TTS | High-quality TTS without a separate OpenAI key. Enables [voice mode](../user-guide/features/voice-mode.md) across messaging platforms. |
+| **Cloud browser automation** | Browser Use | Headless Chromium sessions for `browser_navigate`, `browser_click`, `browser_type`, `browser_vision`. No Browserbase account needed. |
+| **Cloud terminal sandbox** | Modal | Serverless terminal sandboxes for code execution (optional add-on). |
+
+Without the gateway, hooking each of those up means a web search account, a FAL account, a Browser Use account, an OpenAI key, and a Modal account — five separate signups, five separate dashboards, five separate top-up flows. With the gateway, all of it routes through one subscription.
+
+You can also enable just specific gateway tools (e.g. web search but not image generation) — see [Mixing the gateway with your own backends](#mixing-the-gateway-with-your-own-backends) below.
+
+### No credentials in your dotfiles
+
+Because everything routes through one OAuth-authenticated Portal session, you don't accumulate a `.env` file with a dozen long-lived API keys. The refresh token at `~/.phi/auth.json` is the only credential on disk, and Phi mints short-lived JWTs from it per request — see [Token handling](#token-handling) below.
+
+### Cross-platform parity
+
+[Native Windows](../user-guide/windows-native.md) makes per-tool API key setup its rough edge — installing a web search account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
+
+## Setup
+
+### Fresh install — one command
+
+```bash
+phi setup --portal
+```
+
+This runs the full setup in one shot:
+
+1. Opens your browser to portal.nousresearch.com for OAuth login
+2. Stores the refresh token at `~/.phi/auth.json`
+3. Lets you pick a Nous model from the curated list (or skip to keep your current one)
+4. Sets Nous as your inference provider in `~/.phi/config.yaml` (when you pick a model)
+5. Turns on the Tool Gateway (web, image, TTS, browser routing)
+6. Returns you to your terminal ready to `phi chat`
+
+If you don't have a subscription yet, sign up at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) first.
+
+### Existing install — add Portal alongside other providers
+
+If you already have Phi configured with OpenRouter, Anthropic, or any other provider and you want to add the Portal alongside them:
+
+```bash
+phi model
+# pick "Nous Portal" from the provider list
+# browser opens, sign in, done
+```
+
+Your existing providers stay configured. You can switch between them with `/model` mid-session or `phi model` between sessions — the Portal becomes one of your available providers, not your only one.
+
+### Headless / SSH / remote setup
+
+OAuth needs a browser, but the loopback callback runs on the machine where Phi is running. For remote hosts, see [OAuth over SSH / Remote Hosts](../guides/oauth-over-ssh.md) — the same patterns work for the Portal as for any other OAuth-based provider (`ssh -L` port forwarding).
+
+### Profile setup {#profile-setup}
+
+If you use [Phi profiles](../user-guide/profiles.md), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically — no need to repeat the OAuth flow per profile.
+
+## Using the Portal day-to-day
+
+### Inspecting what's wired up
+
+```bash
+phi portal            # log in to Nous Portal + set it up (one-shot onboarding)
+phi portal info       # login status, subscription info, model + gateway routing
+phi portal status     # alias for `portal info`
+phi portal tools      # detailed Tool Gateway catalog with per-tool routing
+phi portal open       # open the subscription management page in your browser
+```
+
+`phi portal` (with no subcommand) is the human-readable alias for `phi auth add nous --type oauth` — it logs you in, lets you pick a Nous model, sets Nous as your inference provider, and offers the Tool Gateway opt-in (identical to `phi setup --portal`, and the same Nous flow as the first-time quick setup).
+
+`phi portal info` gives you the high-level overview:
+
+```
+  Nous Portal
+  ───────────
+  Auth:    ✓ logged in
+  Portal:  https://portal.nousresearch.com
+  Model:   ✓ using Nous as inference provider
+
+  Tool Gateway
+  ────────────
+  Web search & extract  via Nous Portal
+  Image generation      via Nous Portal
+  Text-to-speech        via Nous Portal
+  Browser automation    via Nous Portal
+  Cloud terminal        not configured
+```
+
+### Switching models
+
+Inside a session:
+
+```bash
+/model anthropic/claude-sonnet-4.6
+/model openai/gpt-5.5-pro
+/model google/gemini-3-pro-preview
+```
+
+Or open the picker:
+
+```bash
+/model
+# arrow keys, enter to select
+```
+
+Outside a session (the full setup wizard, useful when adding a new provider):
+
+```bash
+phi model
+```
+
+### Mixing the gateway with your own backends
+
+If you already have, say, a Browserbase account and want to keep using it while routing web search and image generation through Nous, that's supported. Use `phi tools` to pick backends per tool:
+
+```bash
+phi tools
+# → Web search       → "Nous Subscription"
+# → Image generation → "Nous Subscription"
+# → Browser          → "Browserbase"  (your existing key)
+# → TTS              → "Nous Subscription"
+```
+
+The Tool Gateway is opt-in per tool, not all-or-nothing. The managed backends show up in `phi tools` whether or not you're logged into Nous Portal — if you pick "Nous Subscription" before authenticating, Phi runs the Portal login inline (it won't change your inference provider or touch your other tools). See the [Tool Gateway docs](../user-guide/features/tool-gateway.md) for the full per-tool configuration matrix.
+
+### Subscription management
+
+Manage your plan, view usage, or upgrade/cancel at any time:
+
+- **Web:** [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription)
+- **CLI shortcut:** `phi portal open` (opens the same page in your default browser)
+
+## Configuration reference
+
+After `phi setup --portal`, `~/.phi/config.yaml` will look like:
+
+```yaml
+model:
+  provider: nous
+  default: anthropic/claude-sonnet-4.6     # or whatever model you picked
+  base_url: https://inference-api.nousresearch.com/v1
+```
+
+The Tool Gateway settings live under their respective tool sections — each category has a single selection key, and picking **Nous Subscription** in `phi tools` (or `phi setup --portal`) writes the value `nous`:
+
+```yaml
+web:
+  backend: nous          # web search/extract routes through Tool Gateway
+
+image_gen:
+  provider: nous
+
+tts:
+  provider: nous
+
+browser:
+  cloud_provider: nous
+```
+
+The runtime always follows the stored selection — direct API keys left in `.env` are ignored while a category is set to `nous`, and picking a direct provider (e.g. `image_gen.provider: fal`) without its key produces a clear error rather than silently rerouting through the gateway. (Older configs used a legacy `use_gateway: true` flag; it is read as equivalent to `nous` but is no longer written.)
+
+The OAuth refresh token is stored separately at `~/.phi/auth.json` (not in `config.yaml` — credentials and configuration are kept separate by design).
+
+## Token handling
+
+Phi mints a short-lived JWT from your stored Portal refresh token on each inference call rather than reusing a long-lived API key. The token lifecycle is fully automatic — refresh, mint, retry on transient 401 — and you never see it.
+
+Long-running gateway and dashboard processes also run a background keepalive that refreshes the token before it expires, so idle agents don't pay a 401 round-trip on their first request of each credential lifetime. The keepalive derives its tick from the lifetime the Portal actually issued (several ticks per lifetime), bounded above by:
+
+```yaml
+nous:
+  keepalive_interval_seconds: 900   # upper bound on the tick; 0 disables the keepalive
+```
+
+If the Portal invalidates the refresh token (password change, manual revoke, session expiry), the invalid refresh token is **quarantined locally** so Phi stops replaying it and you don't see a stream of identical 401s. The next call surfaces a clear "re-authentication required" message. Run `phi auth add nous` to log in again; the quarantine clears on the next successful login.
+
+## Troubleshooting
+
+### `phi portal info` shows "not logged in"
+
+You haven't completed the OAuth flow, or your refresh token was wiped. Run:
+
+```bash
+phi portal
+```
+
+or use `phi model` and re-select Nous Portal.
+
+### Got a "re-authentication required" message mid-session
+
+Your Portal refresh token was invalidated (password change, manual revoke, or session expiry). Run `phi auth add nous` and your next request will use the new credentials. Any quarantine on the old token clears automatically on successful re-login.
+
+### Want to use a specific provider model that the Portal doesn't expose
+
+The Portal routes each model to a suitable backend — some through OpenRouter, others through proprietary or secondary providers — so most models OpenRouter supports are generally available. If a specific model isn't appearing in `/model`, try the OpenRouter-style slug directly:
+
+```bash
+/model anthropic/claude-opus-4.6
+```
+
+If a model is genuinely missing, [open an issue](https://github.com/PhicoinProject/phi-agent/issues) — we surface the Portal's catalog to Phi and gaps usually mean a routing config we can update.
+
+### Bills not appearing on my Portal account
+
+Check `phi portal info` first — if it shows you're using a different provider (`Model: currently openrouter` instead of `using Nous as inference provider`), your local config has drifted. Run `phi model`, pick Nous Portal, and the next request will route through your subscription.
+
+## See also
+
+- **[Tool Gateway](../user-guide/features/tool-gateway.md)** — Full details on every gateway tool, per-tool config, and pricing
+- **[Subscription proxy](../user-guide/features/subscription-proxy.md)** — Use your Portal subscription from non-Phi tools (other agents, scripts, third-party clients)
+- **[Voice mode](../user-guide/features/voice-mode.md)** — Voice conversations using the Portal's OpenAI TTS
+- **[AI Providers](./providers.md)** — Full provider catalog if you want to compare alternatives
+- **[OAuth over SSH](../guides/oauth-over-ssh.md)** — Login from remote hosts or browser-only environments
+- **[Profiles](../user-guide/profiles.md)** — Multiple Phi configurations sharing one Portal login

@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@phi/ink": ["src/types/phi-ink.d.ts"]
+    }
+  }
+}

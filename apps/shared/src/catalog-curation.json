@@ -1,0 +1,29 @@
+{
+  "artwork": {
+    "skills": {
+      "autonomous-ai-agents/computer-use": "official-art-feature.jpg",
+      "autonomous-ai-agents/codex": "official-art.jpg",
+      "autonomous-ai-agents/phi-agent": "official-art-card-one.jpg"
+    },
+    "plugins": {
+      "desktop:kanban": "official-art.jpg",
+      "desktop:phi-bots": "official-art-card-two.jpg",
+      "desktop:phi-radio": "official-art-card-one.jpg"
+    }
+  },
+  "featured": {
+    "skills": [
+      "autonomous-ai-agents/phi-agent",
+      "autonomous-ai-agents/computer-use",
+      "autonomous-ai-agents/codex",
+      "autonomous-ai-agents/claude-code"
+    ],
+    "plugins": [
+      "claude-subscription-directsdk",
+      "phi-memory-wiki",
+      "blender",
+      "touchdesigner",
+      "phi-telegram-business"
+    ]
+  }
+}

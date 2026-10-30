@@ -1,0 +1,12 @@
+name: room-ledger
+version: 1.0.0
+description: "Per-room ledger and room memory: records steps and test results automatically, adds the ledger tool (record, search, supersede, close), shows the room's decisions and open items each turn and rewrites the room memory from the ledger at session end."
+author: "Phi Lab"
+provides_tools:
+  - ledger
+provides_hooks:
+  - post_tool_call
+  - pre_llm_call
+  - on_session_start
+  - on_session_finalize
+  - on_session_end

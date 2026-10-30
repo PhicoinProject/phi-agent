@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: mailto:ai@philab.fund
+    about: Report vulnerabilities privately — never in a public issue. Read SECURITY.md for scope first.
+  - name: 📖 Documentation
+    url: https://github.com/PhicoinProject/phi-agent/blob/main/README.md
+    about: Check the README and docs before opening an issue.
+  - name: 🤝 Contributing Guide
+    url: https://github.com/PhicoinProject/phi-agent/blob/main/CONTRIBUTING.md
+    about: Read this before submitting a PR.

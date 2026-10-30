@@ -1,0 +1,56 @@
+/* highlight.js token colours for RichMarkdown, drawn from the theme palette. */
+.phi-rich .hljs-comment,
+.phi-rich .hljs-quote {
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+.phi-rich .hljs-keyword,
+.phi-rich .hljs-selector-tag,
+.phi-rich .hljs-built_in,
+.phi-rich .hljs-meta {
+  color: var(--color-primary);
+}
+
+.phi-rich .hljs-string,
+.phi-rich .hljs-regexp,
+.phi-rich .hljs-addition,
+.phi-rich .hljs-template-tag {
+  color: var(--color-success);
+}
+
+.phi-rich .hljs-number,
+.phi-rich .hljs-literal,
+.phi-rich .hljs-symbol,
+.phi-rich .hljs-variable,
+.phi-rich .hljs-template-variable {
+  color: var(--color-warning);
+}
+
+.phi-rich .hljs-title,
+.phi-rich .hljs-section,
+.phi-rich .hljs-type,
+.phi-rich .hljs-attr,
+.phi-rich .hljs-attribute,
+.phi-rich .hljs-name {
+  color: var(--color-foreground);
+  font-weight: 600;
+}
+
+.phi-rich .hljs-deletion {
+  color: var(--color-destructive);
+}
+
+.phi-rich .hljs-emphasis {
+  font-style: italic;
+}
+
+.phi-rich .hljs-strong {
+  font-weight: 700;
+}
+
+/* Display math scrolls instead of overflowing the chat column. */
+.phi-rich .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}

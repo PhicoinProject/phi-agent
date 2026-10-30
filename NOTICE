@@ -1,0 +1,27 @@
+Phi Agent
+Copyright (c) 2026 Phi Lab Foundation
+
+This product is a derivative work of Hermes Agent, created by Nous Research
+and distributed under the MIT License.
+
+    Hermes Agent
+    Copyright (c) 2025 Nous Research
+    https://github.com/NousResearch/hermes-agent
+
+The original MIT License text is reproduced in the LICENSE file alongside
+Phi Lab Foundation's own copyright notice, as that license requires.
+
+Phi Agent has been substantially modified: renamed, rebranded, restructured,
+and extended. It is maintained independently of the upstream project and
+adopts fixes and features from its stable releases.
+
+Phi Agent and Phi Lab Foundation are not affiliated with, endorsed by, or
+sponsored by Nous Research. "Nous", "Nous Research", and "Hermes" are marks
+of their respective owners and are used here only where required to give
+accurate attribution, to name upstream software, or to identify third-party
+services this software can connect to.
+
+Third-party components retain their own licenses and copyright notices. In
+particular, references to `hermes-parser` and `hermes-estree` in dependency
+manifests denote Meta Platforms' JavaScript tooling packages, which are
+unrelated to Hermes Agent and are not covered by this notice.

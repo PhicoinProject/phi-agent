@@ -1,0 +1,6 @@
+name: room-yolo
+version: 1.1.0
+description: Keep session-scoped /yolo on for the chats listed in plugins.entries.room-yolo.settings.rooms.
+author: "Phi Lab"
+provides_hooks:
+  - pre_gateway_dispatch

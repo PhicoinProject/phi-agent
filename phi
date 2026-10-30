@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""
+Phi Agent CLI launcher.
+
+This wrapper should behave like the installed `phi` command, including
+subcommands such as `gateway`, `cron`, and `doctor`.
+"""
+
+if __name__ == "__main__":
+    from phi_cli.main import main
+    main()

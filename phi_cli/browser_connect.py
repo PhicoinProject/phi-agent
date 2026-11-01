@@ -1147,9 +1147,11 @@ def launch_chrome_debug(
     stderr_path = os.path.join(data_dir, _LAUNCH_STDERR_LOG)
     for candidate in candidates:
         try:
+            from tools.app_scope import scoped_app_argv  # PHI: own scope, not the service cgroup
+            launch_argv, launch_env = scoped_app_argv([candidate, *_chrome_debug_args(port)], "chrome-debug")
             with _open_launch_stderr_log(stderr_path) as stderr_file:
                 proc = subprocess.Popen(
-                    [candidate, *_chrome_debug_args(port)],
+                    launch_argv, env=launch_env,
                     stdout=subprocess.DEVNULL, stderr=stderr_file, **_detach_kwargs(system))
         except Exception as exc:
             result.attempts.append(LaunchAttempt(binary=candidate, state="spawn-failed"))

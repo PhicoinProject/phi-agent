@@ -679,6 +679,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     still holding them, and on Windows ``run()``'s unbounded post-kill ``communicate()`` then
     blocks on pipe EOF forever — so the tool call, plus its activity heartbeat, wedges (#106244).
     """
+    from tools.app_scope import scoped_app_argv  # PHI: the forked daemon lands in its own scope
+    cmd, env = scoped_app_argv(cmd, "browser-harness", env)
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", env=env, **_group_popen_kwargs(),

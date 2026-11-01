@@ -3,8 +3,9 @@
  * `releaseAction="fill"`). Slide up to lock the take hands-free (tap again to send), slide left to
  * cancel. A press shorter than 300 ms is treated as an accidental tap and discarded.
  *
- * Inside a composer (a VoiceStatusSlot is provided) it is the composer's round mic: a tap
- * starts hands-free dictation and the next tap ends it, and the recording status renders in
+ * Inside a composer (a VoiceStatusSlot is provided) it is the composer's round mic and a plain
+ * toggle: a tap (or a press of any length) starts dictation, the next tap ends it and fills the
+ * composer. Nothing has to be held down (PHI, admin 2026-10-31). The recording status renders in
  * the slot over the composer's field instead of floating above the button.
  */
 import { Button } from "@phi/ui/ui/components/button";
@@ -29,20 +30,25 @@ export const CANCEL_SLIDE_PX = 80;
 
 export type ReleaseDecision = "discard" | "keep" | "commit";
 
-/** What releasing the button does with the take. With `tapLocks` a short tap keeps it hands-free. */
+/**
+ * What releasing the button does with the take. With `tapLocks` a short tap keeps it hands-free;
+ * with `toggle` every release keeps it (tap to start, tap again to stop).
+ */
 export function releaseDecision({
   cancelled,
   durationMs,
   locked,
   tapLocks = false,
+  toggle = false,
 }: {
   cancelled: boolean;
   durationMs: number;
   locked: boolean;
   tapLocks?: boolean;
+  toggle?: boolean;
 }): ReleaseDecision {
   if (cancelled) return "discard";
-  if (locked) return "keep";
+  if (locked || toggle) return "keep";
   if (durationMs >= MIN_HOLD_MS) return "commit";
   return tapLocks ? "keep" : "discard";
 }
@@ -123,7 +129,8 @@ export function HoldToTalk({ className, deps, onFill, onPartial, onSend, release
 
   const onPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const g = gesture.current;
-    if (!g || g.locked || g.cancelled) return;
+    // The composer mic is a tap toggle: no slide-to-lock / slide-to-cancel gestures.
+    if (!g || g.locked || g.cancelled || inComposer) return;
     const slide = slideGesture(e.clientX - g.x, e.clientY - g.y);
     if (slide === "cancel") {
       g.cancelled = true;
@@ -145,6 +152,7 @@ export function HoldToTalk({ className, deps, onFill, onPartial, onSend, release
       durationMs: Date.now() - g.at,
       locked: g.locked,
       tapLocks: inComposer,
+      toggle: inComposer,
     });
     if (decision === "keep" && !g.locked) setLocked(true);
     if (decision === "commit") {
@@ -192,9 +200,7 @@ export function HoldToTalk({ className, deps, onFill, onPartial, onSend, release
                 <span className="min-w-0 truncate font-sans text-sm text-foreground" data-testid="hold-partial">
                   {partial}
                 </span>
-              ) : (
-                pressed && !locked && <span className="min-w-0 truncate text-muted-foreground">{s.slideHint}</span>
-              )}
+              ) : null}
             </div>,
             slot,
           )}

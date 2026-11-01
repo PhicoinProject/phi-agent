@@ -631,6 +631,8 @@ export default function App() {
                 "px-3 sm:px-6",
                 // Chat: the room header bleeds to the column edges and is the top bar.
                 isChatRoute ? "py-0" : "pt-2 sm:pt-4 lg:pt-6",
+                // Other pages scroll inside this pane; the page itself is a fixed frame on phones.
+                !isChatRoute && "overflow-y-auto overscroll-contain",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >

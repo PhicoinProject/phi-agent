@@ -70,7 +70,7 @@ def test_sessions_export_redact_scrubs_secrets(monkeypatch, tmp_path):
     import phi_cli.main as main_mod
 
     monkeypatch.setenv("PHI_HOME", str(tmp_path))
-    secret = "sk-proj-Zz12345678901234567890123456789012345678"
+    secret = "sk-proj-" + "Zz12345678901234567890123456789012345678"
     path = tmp_path / "state.db"
     db = SessionDB(db_path=path)
     db.create_session("s1", "cli")

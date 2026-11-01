@@ -2,10 +2,10 @@
 
 import sys
 
-__release_date__ = "2026.10.29"
+__release_date__ = "2026.10.31"
 # Declared for type checkers and the old-updater surface audit; served lazily by __getattr__.
 # PHI product version.
-PHI_VERSION = "0.1.21"
+PHI_VERSION = "0.1.23"
 __version__: str
 
 

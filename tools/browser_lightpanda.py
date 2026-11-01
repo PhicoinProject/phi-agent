@@ -216,10 +216,12 @@ def launch_lightpanda(session_name: str, *, block_private_networks: bool = False
     if block_private_networks:
         argv.append("--block-private-networks")
     log_path = str(_state_dir() / f"{session_name}.log")
+    from tools.app_scope import scoped_app_argv  # PHI: own scope, not the service cgroup
+    argv, serve_env = scoped_app_argv(argv, "lightpanda", _browser_env())
     try:
         with open(log_path, "wb") as log_file:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=log_file, env=_browser_env(), start_new_session=True)
+                                    stderr=log_file, env=serve_env, start_new_session=True)
     except (OSError, subprocess.SubprocessError) as e:
         return None, f"Failed to launch lightpanda serve ({binary}): {e}"
 

@@ -207,6 +207,8 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> tuple[Option
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
         chrome_argv.append("--headless=new")
+    from tools.app_scope import scoped_app_argv  # PHI: own scope, not the service cgroup
+    chrome_argv, browser_env = scoped_app_argv(chrome_argv, "chrome-real-profile", browser_env)
     try:
         chrome_proc = subprocess.Popen(chrome_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        stdin=subprocess.DEVNULL, start_new_session=True, env=browser_env)

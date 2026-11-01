@@ -141,15 +141,16 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   overflow: hidden;
 }
 
+/* Phones: the app shell is a fixed, full-height frame. The page itself never scrolls or bounces;
+   only inner panes (the terminal, lists) scroll, so the header and footer stay put (PHI, admin
+   2026-10-31). Pages taller than the screen scroll inside their own main pane. */
 @media (max-width: 768px) {
   html,
-  body,
-  #root {
-    min-height: 100dvh;
-    height: auto;
-    max-height: none;
-    overflow-x: hidden;
-    overflow-y: auto;
+  body {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    overscroll-behavior: none;
   }
 }
 

@@ -387,6 +387,9 @@ DEFAULT_CONFIG = {
         # SSH: carry exported env vars between commands (cwd always carries). false = every command
         # starts from the login env, profile functions included. Local: TERMINAL_LOCAL_PERSISTENT.
         "persistent_shell": True,
+        # PHI: memory limit (MB) of each local background job's own systemd scope; 0 = default
+        # (16 GiB, at most half of RAM). May be raised up to half of RAM, never past it.
+        "local_memory_max_mb": 0,
     },
 
     "web": {

@@ -119,21 +119,22 @@ _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 _SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
-_WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+# PHI: 16 GiB default (upstream 4 GiB OOM-killed real coding-agent and test jobs, ~4.0G peaks).
+_WORKER_MEMORY_MAX_CAP_BYTES = 16 * 1024 * 1024 * 1024
 
 
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
+    Host bound = min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM. The default is
+    that bound capped at 16 GiB; ``terminal.local_memory_max_mb`` (env ``TERMINAL_LOCAL_MEMORY_MAX_MB``,
+    0 = default) may lower it or raise it up to the host bound, never past it.
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
-    isolation composes with PR #57121 instead of inventing a second knob.
+    The proposed local-memory-guard environment override composes with PR #57121 instead of inventing a
+    second knob.
     """
     override_bound: Optional[int] = None
     override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
-    if override:
+    if override and override != "0":
         try:
             parsed = int(override) * 1024 * 1024
         except ValueError:
@@ -145,7 +146,7 @@ def _worker_memory_max_bytes() -> int:
                 "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
-    candidates: list[int] = []
+    candidates: list[int] = []  # host bounds
     try:
         for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
             if line.startswith("0::"):
@@ -165,15 +166,13 @@ def _worker_memory_max_bytes() -> int:
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
             os.sysconf("SC_PAGE_SIZE")
         )
-        physical_bound = min(
-            _WORKER_MEMORY_MAX_CAP_BYTES,
-            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
-        )
-        candidates.append(physical_bound)
+        candidates.append(max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2))
     except (OSError, ValueError, TypeError):
         pass
-    safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
-    return min(override_bound, safe_bound) if override_bound else safe_bound
+    if not candidates:
+        return min(override_bound, _DEFAULT_WORKER_MEMORY_MAX_BYTES) if override_bound else _DEFAULT_WORKER_MEMORY_MAX_BYTES
+    host_bound = min(candidates)
+    return min(override_bound, host_bound) if override_bound else min(_WORKER_MEMORY_MAX_CAP_BYTES, host_bound)
 
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> list[str]:

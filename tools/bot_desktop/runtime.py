@@ -745,8 +745,10 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             child_env["PHI_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
         # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
         log = open(sd / "launcher.log", "wb")
+        from tools.app_scope import scoped_app_argv  # PHI: own scope, not the service cgroup
+        launch_argv, child_env = scoped_app_argv(["bash", str(_LAUNCHER)], "bot-desktop", child_env)
         proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
-            ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            launch_argv, env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True)
         log.close()
         born = _create_time(proc.pid)

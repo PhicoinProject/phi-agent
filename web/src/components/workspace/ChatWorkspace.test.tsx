@@ -257,7 +257,7 @@ describe("ChatWorkspace", () => {
     expect(container.querySelector('[data-testid="mic-button"]')).toBeNull();
   });
 
-  it("on phones the mic types into the terminal (one bracketed paste, not run); Send is Enter", async () => {
+  it("on phones the mic is tap to start, tap to stop; it types into the terminal (one bracketed paste, not run); Send is Enter", async () => {
     phone.value = true;
     let now = 1_000_000;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -268,7 +268,14 @@ describe("ChatWorkspace", () => {
       pointer(hold, "pointerdown");
       await settle();
       act(() => mic.socket.serverOpen());
-      now += 900;
+      now += 150;
+      pointer(hold, "pointerup");
+      await settle();
+      // Releasing the first tap keeps recording; nothing is typed yet.
+      expect(writePty.mock.calls).toEqual([]);
+
+      now += 3000;
+      pointer(hold, "pointerdown");
       pointer(hold, "pointerup");
       act(() => mic.socket.serverSend({ transcript: "buy milk", type: "final" }));
       await settle();

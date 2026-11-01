@@ -268,7 +268,7 @@ describe("HoldToTalk inside a composer", () => {
     expect(button.getAttribute("aria-label")).toBe("Dictate");
   });
 
-  it("hold then release fills; the status shows in the composer's slot, not floating above", async () => {
+  it("a long press does not stop it either: releasing keeps recording until the next tap", async () => {
     const mic = fakeMic();
     const { button, handlers } = renderInComposer({ deps: mic.deps });
     pointer(button, "pointerdown");
@@ -283,6 +283,15 @@ describe("HoldToTalk inside a composer", () => {
 
     now += 900;
     pointer(button, "pointerup");
+    await settle();
+    // Still recording after a long press: nothing has to be held down.
+    expect(mic.socket.json()).not.toContainEqual({ eos: true });
+    expect(handlers.onFill).not.toHaveBeenCalled();
+    expect(button.getAttribute("aria-label")).toBe("Stop dictation");
+
+    now += 2000;
+    pointer(button, "pointerdown");
+    pointer(button, "pointerup");
     act(() => mic.socket.serverSend({ transcript: "buy milk", type: "final" }));
     await settle();
     expect(handlers.onFill).toHaveBeenCalledWith("buy milk");
@@ -290,18 +299,23 @@ describe("HoldToTalk inside a composer", () => {
     expect(slot.querySelector('[data-testid="hold-overlay"]')).toBeNull();
   });
 
-  it("slide left still cancels the take", async () => {
+  it("sliding the finger while tapping does not cancel: the composer mic is a plain toggle", async () => {
     const mic = fakeMic();
     const { button, handlers } = renderInComposer({ deps: mic.deps });
     pointer(button, "pointerdown", 200, 400);
     await settle();
     act(() => mic.socket.serverOpen());
     pointer(button, "pointermove", 115, 400);
-    now += 2000;
+    now += 200;
     pointer(button, "pointerup", 115, 400);
     await settle();
-    expect(mic.socket.closeCode).not.toBeNull();
-    expect(handlers.onFill).not.toHaveBeenCalled();
-    expect(button.getAttribute("aria-label")).toBe("Dictate");
+    expect(mic.socket.closeCode).toBeNull();
+    expect(button.getAttribute("aria-label")).toBe("Stop dictation");
+
+    pointer(button, "pointerdown");
+    pointer(button, "pointerup");
+    act(() => mic.socket.serverSend({ transcript: "note", type: "final" }));
+    await settle();
+    expect(handlers.onFill).toHaveBeenCalledWith("note");
   });
 });

@@ -25,7 +25,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
-_SECRET_TOKEN = "123456789:AAFakeSecretTelegramBotTokenABCDEFGHIJ"
+_SECRET_TOKEN = "123456789:" + "AAFakeSecretTelegramBotTokenABCDEFGHIJ"
 _SECRET_URL = f"https://api.telegram.org/bot{_SECRET_TOKEN}/getMe"
 
 

@@ -176,7 +176,7 @@ TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on the OS, shell and backe
 
 Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
 
-Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Background is only for commands that must keep running after this call returns; health-check a server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd.
+Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Background is only for commands that must keep running after this call returns; health-check a server in a separate call and manage jobs with process_manage. Long-lived programs (browsers, GUI apps, servers, daemons) must not stay in the agent's own process tree: start them with background=true (own systemd scope under the gateway; stopped when it restarts), or with `systemd-run --user --scope` (or `--unit`) when they must outlive the agent; never with `&`, nohup or setsid inside a foreground command or script. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd.
 """
 
 # Environment lifecycle state.

@@ -100,8 +100,10 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
         env["PHI_MEET_REALTIME_KEY"] = realtime_api_key
     log_path = out / "bot.log"
     # Detach: stdout/stderr → log file, new session so parent signals don't propagate.
+    from tools.app_scope import scoped_app_argv  # PHI: own scope, not the service cgroup
+    bot_argv, env = scoped_app_argv([sys.executable, "-m", "plugins.google_meet.meet_bot"], "google-meet", env)
     with open(log_path, "ab", buffering=0) as log_fh:
-        proc = subprocess.Popen([sys.executable, "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen(bot_argv, stdin=subprocess.DEVNULL,
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env, start_new_session=True,
                                 close_fds=True)
     record = {"pid": proc.pid, "meeting_id": meeting_id, "out_dir": str(out), "url": url,

@@ -247,6 +247,8 @@ def _popen_agent_browser(argv: list[str], env: dict[str, str], socket_dir: str, 
             f.write(stdin_payload)
         fds.append(os.open(stdin_path, os.O_RDONLY))
         stdin = fds[-1]
+    from tools.app_scope import scoped_app_argv  # PHI: the forked daemon lands in its own scope
+    argv, env = scoped_app_argv(argv, "agent-browser", env)
     try:
         _popen_extra: dict = {}
         if os.name == "nt":
